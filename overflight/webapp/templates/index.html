@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OverFlight — What's Flying Over You?</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <h1 class="logo">&#9992; OverFlight</h1>
+            <p class="tagline">What's Flying Over You?</p>
+        </div>
+    </header>
+
+    <!-- Ad placement: top banner -->
+    <div class="ad-slot ad-slot-top">
+        <div class="container">
+            <div class="ad-placeholder">Advertisement</div>
+        </div>
+    </div>
+
+    <main class="container">
+        <section class="search-panel" id="search-panel">
+            <h2>Find aircraft that flew over your location</h2>
+
+            <div class="location-input">
+                <div class="input-group">
+                    <label for="zipcode-input">Enter your zip code</label>
+                    <div class="input-row">
+                        <input
+                            type="text"
+                            id="zipcode-input"
+                            name="zipcode"
+                            placeholder="e.g. 10001"
+                            maxlength="5"
+                            pattern="[0-9]{5}"
+                            value="{{ saved_zip }}"
+                            autocomplete="postal-code"
+                        >
+                        <button id="search-btn" type="button">Search</button>
+                    </div>
+                </div>
+
+                <div class="divider"><span>or</span></div>
+
+                <button id="geo-btn" type="button" class="geo-button">
+                    &#128205; Use My Location
+                </button>
+            </div>
+
+            <div class="radius-selector">
+                <label for="radius-select">Search radius:</label>
+                <select id="radius-select" name="radius">
+                    {% for r in radius_options %}
+                    <option value="{{ r }}" {% if r == default_radius %}selected{% endif %}>
+                        {{ r }} miles
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div id="location-info" class="location-info" style="display:none;">
+                <span id="location-text"></span>
+            </div>
+
+            <div id="error-msg" class="error-msg" style="display:none;"></div>
+        </section>
+
+        <section id="loading" class="loading" style="display:none;">
+            <div class="spinner"></div>
+            <p>Searching for aircraft&hellip;</p>
+        </section>
+
+        <section id="results-section" class="results-section" style="display:none;">
+            <div class="results-header">
+                <h2 id="results-title"></h2>
+                <p id="results-subtitle" class="results-subtitle"></p>
+            </div>
+
+            <div id="flight-list" class="flight-list">
+                <!-- Flight cards rendered by JavaScript -->
+            </div>
+
+            <!-- Ad placement: between results -->
+            <div class="ad-slot ad-slot-mid">
+                <div class="ad-placeholder">Advertisement</div>
+            </div>
+        </section>
+
+        <section id="no-results" class="no-results" style="display:none;">
+            <h2>No aircraft found</h2>
+            <p>No aircraft were detected within your search radius in the past 24 hours.</p>
+            <p class="hint">Try increasing the search radius or check back later. Results depend on ADS-B coverage in your area.</p>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <p>
+                OverFlight uses publicly broadcast ADS-B data from the
+                <a href="https://opensky-network.org" target="_blank" rel="noopener">OpenSky Network</a>.
+            </p>
+            <p class="disclaimer">
+                Aircraft positions are based on ADS-B receiver coverage and may not include all flights.
+                Data is retained for 24 hours.
+            </p>
+        </div>
+    </footer>
+
+    <!-- Ad placement: bottom banner -->
+    <div class="ad-slot ad-slot-bottom">
+        <div class="container">
+            <div class="ad-placeholder">Advertisement</div>
+        </div>
+    </div>
+
+    <!-- Pass server-side values to JavaScript -->
+    <script>
+        window.OVERFLIGHT = {
+            savedLat: {{ saved_lat if saved_lat else 'null' }},
+            savedLon: {{ saved_lon if saved_lon else 'null' }},
+            savedZip: "{{ saved_zip }}",
+            defaultRadius: {{ default_radius }},
+            maxRadius: {{ max_radius }},
+        };
+    </script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
