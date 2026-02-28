@@ -1,0 +1,15 @@
+# Web framework
+flask>=3.0,<4.0
+gunicorn>=21.2,<23.0
+
+# Database
+pysqlite3>=0.5.2
+
+# HTTP client for OpenSky API
+requests>=2.31,<3.0
+
+# Scheduling for cleanup jobs
+apscheduler>=3.10,<4.0
+
+# Math/geo utilities (haversine distance)
+# Note: SpatiaLite handles spatial queries, but we use math for lightweight checks
