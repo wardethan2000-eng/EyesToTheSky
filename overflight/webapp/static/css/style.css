@@ -443,6 +443,296 @@ a:hover {
     opacity: 0.8;
 }
 
+/* === View Toggle === */
+.view-toggle {
+    display: flex;
+    gap: 0.25rem;
+    margin-top: 0.75rem;
+}
+
+.view-toggle-btn {
+    padding: 0.4rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-surface);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.view-toggle-btn:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+.view-toggle-btn.active {
+    background: var(--color-primary);
+    color: #fff;
+    border-color: var(--color-primary);
+}
+
+/* === Map Section === */
+.map-section {
+    margin-top: 1rem;
+    position: relative;
+}
+
+.map-container {
+    position: relative;
+    width: 100%;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+}
+
+.map {
+    width: 100%;
+    height: 60vh;
+    min-height: 400px;
+}
+
+.map-loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.85);
+    z-index: 10;
+}
+
+.map-loading p {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+/* Aircraft counter overlay */
+.aircraft-counter {
+    position: absolute;
+    top: 0.75rem;
+    left: 0.75rem;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    box-shadow: var(--shadow-sm);
+    z-index: 5;
+}
+
+/* === Playback Controls === */
+.playback-controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(6px);
+    border-top: 1px solid var(--color-border);
+    z-index: 5;
+}
+
+.playback-btn {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 50%;
+    background: var(--color-primary);
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+
+.playback-btn:hover {
+    background: var(--color-primary-dark);
+}
+
+.playback-timeline {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.playback-timeline input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-border);
+    outline: none;
+    cursor: pointer;
+}
+
+.playback-timeline input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-primary);
+    cursor: pointer;
+}
+
+.playback-timeline input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-primary);
+    cursor: pointer;
+    border: none;
+}
+
+.playback-time-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-text);
+    white-space: nowrap;
+    min-width: 5rem;
+    text-align: right;
+}
+
+.playback-settings {
+    display: flex;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.playback-speed,
+.altitude-filter {
+    padding: 0.3rem 0.4rem;
+    font-size: 0.78rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-surface);
+    outline: none;
+    cursor: pointer;
+}
+
+/* === Detail Sidebar === */
+.detail-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 340px;
+    max-width: 100vw;
+    height: 100vh;
+    background: var(--color-surface);
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    overflow-y: auto;
+    padding: 1.25rem;
+    transform: translateX(0);
+    transition: transform 0.25s ease;
+}
+
+.detail-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: var(--color-bg);
+    font-size: 1.2rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    transition: background 0.15s;
+}
+
+.detail-close:hover {
+    background: var(--color-border);
+}
+
+.detail-header {
+    margin-bottom: 1rem;
+    padding-right: 2rem;
+}
+
+.detail-icon-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+}
+
+.detail-icon-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.detail-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--color-text);
+}
+
+.detail-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--color-bg);
+}
+
+.detail-label {
+    font-size: 0.78rem;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    font-weight: 500;
+}
+
+.detail-value {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-text);
+    text-align: right;
+}
+
+.detail-loading {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-text-secondary);
+}
+
+.detail-error {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: var(--color-warning);
+}
+
 /* === Responsive === */
 @media (min-width: 600px) {
     .flight-card-info {
@@ -451,5 +741,29 @@ a:hover {
 
     .logo {
         font-size: 2rem;
+    }
+}
+
+/* Mobile: detail sidebar becomes bottom sheet */
+@media (max-width: 599px) {
+    .detail-sidebar {
+        top: auto;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: auto;
+        max-height: 60vh;
+        border-radius: var(--radius) var(--radius) 0 0;
+        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+    }
+
+    .playback-settings {
+        display: none;
+    }
+
+    .map {
+        height: 50vh;
+        min-height: 300px;
     }
 }

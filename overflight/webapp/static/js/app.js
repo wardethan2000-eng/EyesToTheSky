@@ -187,6 +187,11 @@
         });
 
         resultsSection.style.display = "block";
+
+        // Notify map module that search is complete (enables view toggle)
+        if (window.OverflightMap) {
+            window.OverflightMap.onSearchComplete(currentLat, currentLon, radius);
+        }
     }
 
     function createFlightCard(flight) {

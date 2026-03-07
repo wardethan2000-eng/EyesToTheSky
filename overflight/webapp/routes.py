@@ -19,6 +19,8 @@ from overflight.config import (
     CHUNK_SIZE_MEDIUM_DENSITY_HOURS,
     DEFAULT_RADIUS_MILES,
     MAX_RADIUS_MILES,
+    PLAYBACK_SPEED_RATIO,
+    RENDER_BUDGET_MAX,
     RETENTION_HOURS,
 )
 from overflight.database.queries import enrich_results, find_flights_near
@@ -51,6 +53,10 @@ def index():
         saved_lon=saved_lon,
         saved_zip=saved_zip,
         max_radius=int(MAX_RADIUS_MILES),
+        config={
+            "PLAYBACK_SPEED_RATIO": PLAYBACK_SPEED_RATIO,
+            "RENDER_BUDGET_MAX": RENDER_BUDGET_MAX,
+        },
     )
 
 

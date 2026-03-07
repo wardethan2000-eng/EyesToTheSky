@@ -230,6 +230,22 @@ def init_tracks_db(db_path, use_spatialite=True):
         ON track_segments (phase)
     """)
 
+    if has_spatialite:
+        # Add a geometry column and spatial index for SpatiaLite
+        try:
+            cursor.execute("""
+                SELECT AddGeometryColumn('track_segments', 'geom', 4326, 'POLYGON', 'XY')
+            """)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        try:
+            cursor.execute("""
+                SELECT CreateSpatialIndex('track_segments', 'geom')
+            """)
+        except sqlite3.OperationalError:
+            pass  # Index already exists
+
     # Track build metadata table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS track_build_meta (
