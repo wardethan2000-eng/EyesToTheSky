@@ -15,10 +15,17 @@ from overflight.config import (
     SIMPLIFICATION_EPSILON,
     TRACK_GAP_THRESHOLD_SECONDS,
 )
-from overflight.database.queries import EARTH_RADIUS_MILES, haversine_distance
 from overflight.utils.simplify import simplify_track
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_lon_delta(lat, radius_miles):
+    """Return longitude delta while avoiding divide-by-zero near poles."""
+    cos_lat = math.cos(math.radians(lat))
+    if abs(cos_lat) < 1e-6:
+        cos_lat = 1e-6 if cos_lat >= 0 else -1e-6
+    return radius_miles / (69.0 * cos_lat)
 
 
 def _classify_phase(points):
@@ -44,10 +51,22 @@ def _classify_phase(points):
         return "ground"
     if all_airborne:
         return "enroute"
+    def _first_last_altitude(rows):
+        alts = [p.get("altitude") for p in rows if p.get("altitude") is not None]
+        if len(alts) < 2:
+            return None, None
+        return alts[0], alts[-1]
+
+    start_alt, end_alt = _first_last_altitude(points)
+
     if first_on_ground and not last_on_ground:
-        return "departure"
+        # Require a net climb when altitude data is available.
+        if start_alt is None or end_alt is None or end_alt >= start_alt:
+            return "departure"
     if not first_on_ground and last_on_ground:
-        return "arrival"
+        # Require a net descent when altitude data is available.
+        if start_alt is None or end_alt is None or end_alt <= start_alt:
+            return "arrival"
 
     # Mixed — default to enroute
     return "enroute"
@@ -68,6 +87,7 @@ def _segment_points(rows):
         return
 
     current_segment = [rows[0]]
+    transition_count = 0
 
     for i in range(1, len(rows)):
         prev = rows[i - 1]
@@ -76,9 +96,23 @@ def _segment_points(rows):
         time_gap = curr["timestamp"] - prev["timestamp"]
         ground_change = bool(curr["on_ground"]) != bool(prev["on_ground"])
 
-        if time_gap > TRACK_GAP_THRESHOLD_SECONDS or ground_change:
+        if time_gap > TRACK_GAP_THRESHOLD_SECONDS:
             yield current_segment
             current_segment = [curr]
+            transition_count = 0
+            continue
+
+        # Keep a single ground/air transition in one segment so phases like
+        # departure/arrival can be represented. If a second transition appears,
+        # start a new segment that includes both sides of the new transition.
+        if ground_change:
+            if transition_count >= 1:
+                yield current_segment
+                current_segment = [prev, curr]
+                transition_count = 1
+            else:
+                current_segment.append(curr)
+                transition_count = 1
         else:
             current_segment.append(curr)
 
@@ -241,36 +275,58 @@ def build_tracks_incremental(conn):
     """
     cursor = conn.cursor()
 
-    # Get last build timestamp
+    # Get last build timestamp.
     cursor.execute(
         "SELECT value FROM track_build_meta WHERE key = 'last_build_timestamp'"
     )
     row = cursor.fetchone()
     last_build = int(row[0]) if row else None
 
+    # Rebuild with a small overlap so slightly late-arriving reports are not
+    # permanently skipped.
+    overlap_seconds = TRACK_GAP_THRESHOLD_SECONDS * 2
+    since_timestamp = None
+    if last_build is not None:
+        since_timestamp = max(0, last_build - overlap_seconds)
+
     # Delete existing segments that overlap with the rebuild window
     # to avoid duplicates from partial segments being completed
-    if last_build is not None:
+    if since_timestamp is not None:
         cursor.execute(
             "DELETE FROM track_segments WHERE end_time >= ?",
-            (last_build,),
+            (since_timestamp,),
         )
         conn.commit()
 
-    count = build_tracks(conn, since_timestamp=last_build)
+    count = build_tracks(conn, since_timestamp=since_timestamp)
 
-    # Update last build timestamp
-    now = int(time.time())
+    # Update metadata to max processed event timestamp, not wall-clock time.
+    cursor.execute("SELECT MAX(timestamp) FROM state_vectors")
+    max_ts_row = cursor.fetchone()
+    max_ts = int(max_ts_row[0]) if max_ts_row and max_ts_row[0] is not None else last_build
+
+    if max_ts is None:
+        max_ts = int(time.time())
+
     cursor.execute(
         "INSERT OR REPLACE INTO track_build_meta (key, value) VALUES (?, ?)",
-        ("last_build_timestamp", str(now)),
+        ("last_build_timestamp", str(max_ts)),
     )
     conn.commit()
 
     return count
 
 
-def get_tracks_near(conn, lat, lon, radius_miles, start_time=None, end_time=None):
+def get_tracks_near(
+    conn,
+    lat,
+    lon,
+    radius_miles,
+    start_time=None,
+    end_time=None,
+    min_alt=0,
+    phases=None,
+):
     """
     Query track segments that overlap a spatial and temporal window.
 
@@ -292,21 +348,38 @@ def get_tracks_near(conn, lat, lon, radius_miles, start_time=None, end_time=None
 
     # Compute bounding box for the spatial filter
     lat_delta = radius_miles / 69.0
-    lon_delta = radius_miles / (69.0 * math.cos(math.radians(lat)))
+    lon_delta = _safe_lon_delta(lat, radius_miles)
     bbox_min_lat = lat - lat_delta
     bbox_max_lat = lat + lat_delta
     bbox_min_lon = lon - lon_delta
     bbox_max_lon = lon + lon_delta
 
-    cursor = conn.cursor()
-    cursor.execute("""
+    params = [
+        start_time,
+        end_time,
+        bbox_min_lat,
+        bbox_max_lat,
+        bbox_min_lon,
+        bbox_max_lon,
+    ]
+    query = """
         SELECT * FROM track_segments
         WHERE end_time >= ? AND start_time <= ?
           AND max_lat >= ? AND min_lat <= ?
           AND max_lon >= ? AND min_lon <= ?
-    """, (start_time, end_time,
-          bbox_min_lat, bbox_max_lat,
-          bbox_min_lon, bbox_max_lon))
+    """
+
+    if min_alt and min_alt > 0:
+        query += " AND COALESCE(max_altitude, 0) >= ?"
+        params.append(min_alt)
+
+    if phases:
+        placeholders = ",".join(["?"] * len(phases))
+        query += f" AND phase IN ({placeholders})"
+        params.extend(phases)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
 
     results = []
     for row in cursor.fetchall():
@@ -317,7 +390,16 @@ def get_tracks_near(conn, lat, lon, radius_miles, start_time=None, end_time=None
     return results
 
 
-def get_track_density(conn, lat, lon, radius_miles, start_time=None, end_time=None):
+def get_track_density(
+    conn,
+    lat,
+    lon,
+    radius_miles,
+    start_time=None,
+    end_time=None,
+    min_alt=0,
+    phases=None,
+):
     """
     Count track segments matching spatial and temporal criteria.
 
@@ -338,20 +420,89 @@ def get_track_density(conn, lat, lon, radius_miles, start_time=None, end_time=No
         end_time = int(time.time())
 
     lat_delta = radius_miles / 69.0
-    lon_delta = radius_miles / (69.0 * math.cos(math.radians(lat)))
+    lon_delta = _safe_lon_delta(lat, radius_miles)
     bbox_min_lat = lat - lat_delta
     bbox_max_lat = lat + lat_delta
     bbox_min_lon = lon - lon_delta
     bbox_max_lon = lon + lon_delta
 
-    cursor = conn.cursor()
-    cursor.execute("""
+    params = [
+        start_time,
+        end_time,
+        bbox_min_lat,
+        bbox_max_lat,
+        bbox_min_lon,
+        bbox_max_lon,
+    ]
+    query = """
         SELECT COUNT(*) FROM track_segments
         WHERE end_time >= ? AND start_time <= ?
           AND max_lat >= ? AND min_lat <= ?
           AND max_lon >= ? AND min_lon <= ?
-    """, (start_time, end_time,
-          bbox_min_lat, bbox_max_lat,
-          bbox_min_lon, bbox_max_lon))
+    """
 
+    if min_alt and min_alt > 0:
+        query += " AND COALESCE(max_altitude, 0) >= ?"
+        params.append(min_alt)
+
+    if phases:
+        placeholders = ",".join(["?"] * len(phases))
+        query += f" AND phase IN ({placeholders})"
+        params.extend(phases)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
+
+    return cursor.fetchone()[0]
+
+
+def get_unique_aircraft_count(
+    conn,
+    lat,
+    lon,
+    radius_miles,
+    start_time=None,
+    end_time=None,
+    min_alt=0,
+    phases=None,
+):
+    """Count unique ICAO24 values matching spatial/temporal filters."""
+    if start_time is None:
+        start_time = int(time.time()) - (RETENTION_HOURS * 3600)
+    if end_time is None:
+        end_time = int(time.time())
+
+    lat_delta = radius_miles / 69.0
+    lon_delta = _safe_lon_delta(lat, radius_miles)
+    bbox_min_lat = lat - lat_delta
+    bbox_max_lat = lat + lat_delta
+    bbox_min_lon = lon - lon_delta
+    bbox_max_lon = lon + lon_delta
+
+    params = [
+        start_time,
+        end_time,
+        bbox_min_lat,
+        bbox_max_lat,
+        bbox_min_lon,
+        bbox_max_lon,
+    ]
+    query = """
+        SELECT COUNT(DISTINCT icao24) FROM track_segments
+        WHERE end_time >= ? AND start_time <= ?
+          AND max_lat >= ? AND min_lat <= ?
+          AND max_lon >= ? AND min_lon <= ?
+    """
+
+    if min_alt and min_alt > 0:
+        query += " AND COALESCE(max_altitude, 0) >= ?"
+        params.append(min_alt)
+
+    if phases:
+        placeholders = ",".join(["?"] * len(phases))
+        query += f" AND phase IN ({placeholders})"
+        params.extend(phases)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
     return cursor.fetchone()[0]

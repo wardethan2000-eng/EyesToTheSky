@@ -122,6 +122,14 @@
             setupMapLayers();
             drawSearchRadius();
             bindPlaybackControls();
+            syncRenderBudgetToZoom();
+
+            map.on("zoomend", syncRenderBudgetToZoom);
+            map.on("moveend", function () {
+                var center = map.getCenter();
+                window.OverflightPlayback.setMapCenter(center.lat, center.lng);
+            });
+
             startPlayback();
         });
     }
@@ -133,6 +141,18 @@
         if (radiusMiles <= 25) return 9;
         if (radiusMiles <= 50) return 8;
         return 7;
+    }
+
+    function renderBudgetForZoom(zoom) {
+        if (zoom > 12) return 220;
+        if (zoom >= 9) return window.OVERFLIGHT.renderBudgetMax || 150;
+        return 90;
+    }
+
+    function syncRenderBudgetToZoom() {
+        if (!map || !window.OverflightPlayback) return;
+        var zoom = map.getZoom();
+        window.OverflightPlayback.setRenderBudget(renderBudgetForZoom(zoom));
     }
 
     // --- Map Layers ---
@@ -372,7 +392,7 @@
         // Build GeoJSON for detailed aircraft
         var detailedFeatures = detailed.map(function (ac) {
             var iconInfo = window.OverflightIcons.getAircraftIcon({
-                model: ac.callsign,  // Best we have without fetching enrichment
+                model: null,
                 operator: null
             });
 
@@ -483,7 +503,17 @@
             onLoadingProgress: function (message) {
                 mapLoadingText.textContent = message;
             },
-            onReady: function () {
+            onReady: function (state) {
+                if (state && (state.empty || state.error)) {
+                    playbackControls.style.display = "none";
+                    mapLoading.style.display = "flex";
+                    if (state.empty) {
+                        mapLoadingText.textContent = "No aircraft data available for this area yet.";
+                    } else {
+                        mapLoadingText.textContent = "Unable to load playback data. Please try again.";
+                    }
+                    return;
+                }
                 mapLoading.style.display = "none";
                 playbackControls.style.display = "flex";
             }
@@ -525,20 +555,7 @@
     }
 
     function drawSelectedTrack(icao24) {
-        // Find polyline data from playback state
-        var state = window.OverflightPlayback.getState();
-        // We need to search allTracks — access via global
-        var tracks = window._overflightAllTracks || [];
-        var coords = [];
-
-        for (var i = 0; i < tracks.length; i++) {
-            if (tracks[i].icao24 === icao24 && tracks[i].polyline) {
-                var poly = tracks[i].polyline;
-                for (var j = 0; j < poly.length; j++) {
-                    coords.push([poly[j][2], poly[j][1]]);
-                }
-            }
-        }
+        var coords = window.OverflightPlayback.getTrackPolylineByIcao(icao24);
 
         if (coords.length > 0 && map.getSource("selected-track")) {
             map.getSource("selected-track").setData({

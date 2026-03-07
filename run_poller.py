@@ -46,8 +46,6 @@ shutdown_event = threading.Event()
 
 def cleanup_worker(db_path, interval_minutes):
     """Background thread that periodically purges old records and rebuilds tracks."""
-    from overflight.database.tracks import build_tracks_incremental
-
     while not shutdown_event.is_set():
         shutdown_event.wait(interval_minutes * 60)
         if shutdown_event.is_set():
@@ -57,12 +55,11 @@ def cleanup_worker(db_path, interval_minutes):
             init_tracks_db(db_path, use_spatialite=False)
             deleted = purge_old_records(conn)
             tracks_deleted = purge_old_tracks(conn)
-            tracks_built = build_tracks_incremental(conn)
             count = get_record_count(conn)
             conn.close()
             logger.info(
-                "Cleanup: purged %d records, %d track segments; built %d tracks; %d records remaining",
-                deleted, tracks_deleted, tracks_built, count,
+                "Cleanup: purged %d records, %d track segments; %d records remaining",
+                deleted, tracks_deleted, count,
             )
         except Exception:
             logger.exception("Cleanup error")

@@ -109,7 +109,7 @@ class TestTrackBuilding(unittest.TestCase):
         self.assertEqual(count, 2)
 
     def test_ground_air_transition_creates_segments(self):
-        """Ground-to-air transition splits into departure + enroute segments."""
+        """Ground-to-air transition creates a departure segment."""
         rows = []
         # Ground phase
         for i in range(5):
@@ -126,12 +126,33 @@ class TestTrackBuilding(unittest.TestCase):
         _insert_state_vectors(self.conn, rows)
 
         count = build_tracks(self.conn)
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 1)
 
         cursor = self.conn.cursor()
-        cursor.execute("SELECT phase FROM track_segments ORDER BY start_time")
-        phases = [row[0] for row in cursor.fetchall()]
-        self.assertIn("ground", phases)
+        cursor.execute("SELECT phase FROM track_segments")
+        self.assertEqual(cursor.fetchone()[0], "departure")
+
+    def test_phase_classification_arrival(self):
+        """Air-to-ground transition is classified as arrival."""
+        rows = []
+        for i in range(8):
+            rows.append((
+                "abc123", "UAL100", 40.5 - i * 0.01, -74.0,
+                4000 - i * 400, 180, 190, -5, 0, self.now - 200 + i * 10
+            ))
+        for i in range(5):
+            rows.append((
+                "abc123", "UAL100", 40.42, -74.0,
+                0, 8, 180, 0, 1, self.now - 120 + i * 10
+            ))
+
+        _insert_state_vectors(self.conn, rows)
+        count = build_tracks(self.conn)
+        self.assertEqual(count, 1)
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT phase FROM track_segments")
+        self.assertEqual(cursor.fetchone()[0], "arrival")
 
     def test_phase_classification_ground(self):
         """All on-ground points classified as 'ground'."""

@@ -13,11 +13,12 @@
 
     var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 960;
     var RENDER_BUDGET = window.OVERFLIGHT.renderBudgetMax || 150;
-    var SCRUBBER_MAX = 1000;
+    var TARGET_FPS = 30;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
     var chunkBuffer = {};      // loaded chunks keyed by chunk index
+    var pendingChunkLoads = {}; // in-flight fetches keyed by chunk index
     var allTracks = [];        // flat list of all loaded track objects
     var playbackTime = 0;      // current data-time (unix timestamp)
     var playbackStart = 0;     // earliest timestamp in plan
@@ -26,8 +27,10 @@
     var lastFrameTime = null;
     var animFrameId = null;
     var speedMultiplier = 1.0;
+    var currentRenderBudget = RENDER_BUDGET;
     var altitudeFilter = 0;
     var currentChunkIndex = -1;
+    var lastRenderTime = 0;
 
     // Callbacks set by map.js
     var onAircraftUpdate = null;  // fn(visibleAircraft: Array)
@@ -38,6 +41,7 @@
     // Map center for distance sorting (set by map.js)
     var mapCenterLat = 0;
     var mapCenterLon = 0;
+    var searchRadiusMiles = 0;
 
     /**
      * Initialize playback for a location.
@@ -54,13 +58,16 @@
         onReady = callbacks.onReady || function () {};
         mapCenterLat = lat;
         mapCenterLon = lon;
+        searchRadiusMiles = radius;
 
         // Reset state
         stop();
         plan = null;
         chunkBuffer = {};
+        pendingChunkLoads = {};
         allTracks = [];
         currentChunkIndex = -1;
+        lastRenderTime = 0;
 
         onLoadingProgress("Fetching playback plan\u2026");
 
@@ -76,6 +83,9 @@
                 plan = data;
                 if (!plan.chunks || plan.chunks.length === 0) {
                     onLoadingProgress("No aircraft data available for this area.");
+                    onAircraftUpdate([], [], 0);
+                    onPlaybackTimeChange(0, 0);
+                    onReady({ empty: true });
                     return;
                 }
                 playbackStart = plan.chunks[0].start;
@@ -92,8 +102,11 @@
                     }
                 });
             })
-            .catch(function (err) {
+            .catch(function () {
                 onLoadingProgress("Failed to load playback data.");
+                onAircraftUpdate([], [], 0);
+                onPlaybackTimeChange(0, 0);
+                onReady({ error: true });
             });
     }
 
@@ -106,17 +119,17 @@
             if (callback) callback();
             return;
         }
+        if (pendingChunkLoads[index]) {
+            if (callback) pendingChunkLoads[index].push(callback);
+            return;
+        }
+
+        pendingChunkLoads[index] = callback ? [callback] : [];
 
         var chunk = plan.chunks[index];
         var url = "/api/tracks?lat=" + mapCenterLat + "&lon=" + mapCenterLon +
-                  "&radius=" + (plan.chunks.length > 0 ? "" : "") +
-                  "&start=" + chunk.start + "&end=" + chunk.end;
-        if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
-
-        var radius = plan.chunks._queryRadius;
-        // Build URL using the plan's query params
-        url = "/api/tracks?lat=" + mapCenterLat + "&lon=" + mapCenterLon +
-              "&start=" + chunk.start + "&end=" + chunk.end;
+            "&radius=" + searchRadiusMiles +
+            "&start=" + chunk.start + "&end=" + chunk.end;
         if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
 
         onLoadingProgress("Loading chunk " + (index + 1) + " of " + plan.chunk_count + "\u2026");
@@ -128,23 +141,44 @@
             })
             .then(function (data) {
                 chunkBuffer[index] = data.tracks;
-                // Merge into allTracks (avoid duplicates by track id)
-                var existingIds = {};
-                allTracks.forEach(function (t) { existingIds[t.id] = true; });
                 data.tracks.forEach(function (t) {
                     // Parse polyline if it's a string
                     if (typeof t.polyline === "string") {
                         t.polyline = JSON.parse(t.polyline);
                     }
-                    if (!existingIds[t.id]) {
-                        allTracks.push(t);
-                    }
+                    t._interpIndex = 0;
                 });
-                if (callback) callback();
+                rebuildTrackCache();
+                flushPendingCallbacks(index);
             })
             .catch(function () {
-                if (callback) callback();
+                flushPendingCallbacks(index);
             });
+    }
+
+    function flushPendingCallbacks(index) {
+        var callbacks = pendingChunkLoads[index] || [];
+        delete pendingChunkLoads[index];
+        for (var i = 0; i < callbacks.length; i++) {
+            callbacks[i]();
+        }
+    }
+
+    function rebuildTrackCache() {
+        var byId = {};
+        var merged = [];
+        for (var key in chunkBuffer) {
+            if (!Object.prototype.hasOwnProperty.call(chunkBuffer, key)) continue;
+            var tracks = chunkBuffer[key] || [];
+            for (var i = 0; i < tracks.length; i++) {
+                var track = tracks[i];
+                if (!byId[track.id]) {
+                    byId[track.id] = true;
+                    merged.push(track);
+                }
+            }
+        }
+        allTracks = merged;
     }
 
     function play() {
@@ -181,6 +215,13 @@
         // progress is 0..1
         var t = playbackStart + progress * (playbackEnd - playbackStart);
         playbackTime = Math.max(playbackStart, Math.min(playbackEnd, t));
+        var targetChunk = findChunkIndexForTime(playbackTime);
+
+        // Large timeline jumps flush older buffer to keep memory bounded.
+        if (targetChunk >= 0 && currentChunkIndex >= 0 && Math.abs(targetChunk - currentChunkIndex) > 1) {
+            resetBufferForChunk(targetChunk);
+        }
+        resetInterpolationCaches();
 
         // Check if we need to load chunks for this position
         ensureChunksLoaded();
@@ -199,9 +240,29 @@
         altitudeFilter = minAlt;
     }
 
+    function setRenderBudget(budget) {
+        var parsed = parseInt(budget, 10);
+        if (!isNaN(parsed) && parsed >= 25) {
+            currentRenderBudget = parsed;
+        }
+    }
+
     function setMapCenter(lat, lon) {
         mapCenterLat = lat;
         mapCenterLon = lon;
+    }
+
+    function getTrackPolylineByIcao(icao24) {
+        if (!icao24) return [];
+        var coords = [];
+        for (var i = 0; i < allTracks.length; i++) {
+            var track = allTracks[i];
+            if (track.icao24 !== icao24 || !track.polyline) continue;
+            for (var j = 0; j < track.polyline.length; j++) {
+                coords.push([track.polyline[j][2], track.polyline[j][1]]);
+            }
+        }
+        return coords;
     }
 
     function tick(now) {
@@ -221,8 +282,11 @@
         // Ensure we have the right chunks loaded
         ensureChunksLoaded();
 
-        // Update positions
-        updateVisibleAircraft();
+        // Cap heavy render work to a stable FPS to reduce CPU load.
+        if ((now - lastRenderTime) >= (1000 / TARGET_FPS)) {
+            updateVisibleAircraft();
+            lastRenderTime = now;
+        }
 
         // Notify time update
         var progress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
@@ -235,27 +299,75 @@
 
     function ensureChunksLoaded() {
         if (!plan) return;
-        // Find which chunk the current time falls in
-        for (var i = 0; i < plan.chunks.length; i++) {
-            if (playbackTime >= plan.chunks[i].start && playbackTime < plan.chunks[i].end) {
-                if (i !== currentChunkIndex) {
-                    currentChunkIndex = i;
-                    loadChunk(i);
-                    // Prefetch next
-                    if (i + 1 < plan.chunks.length) {
-                        loadChunk(i + 1);
-                    }
-                    // Free old chunks (keep 1 behind)
-                    for (var key in chunkBuffer) {
-                        var k = parseInt(key, 10);
-                        if (k < i - 1) {
-                            delete chunkBuffer[k];
-                        }
-                    }
+        var i = findChunkIndexForTime(playbackTime);
+        if (i < 0) return;
+
+        if (i !== currentChunkIndex) {
+            currentChunkIndex = i;
+            resetInterpolationCaches();
+
+            // Keep a small sliding window in memory (one behind, one ahead).
+            var kept = {};
+            kept[i] = true;
+            if (i - 1 >= 0) kept[i - 1] = true;
+            if (i + 1 < plan.chunks.length) kept[i + 1] = true;
+
+            for (var key in chunkBuffer) {
+                if (!Object.prototype.hasOwnProperty.call(chunkBuffer, key)) continue;
+                var k = parseInt(key, 10);
+                if (!kept[k]) {
+                    delete chunkBuffer[k];
                 }
-                break;
+            }
+            rebuildTrackCache();
+
+            loadChunk(i);
+            if (i + 1 < plan.chunks.length) {
+                loadChunk(i + 1);
+            }
+            if (i - 1 >= 0) {
+                loadChunk(i - 1);
+            }
+        } else {
+            // Ensure current and next chunk are present even without index change.
+            loadChunk(i);
+            if (i + 1 < plan.chunks.length) {
+                loadChunk(i + 1);
             }
         }
+    }
+
+    function resetBufferForChunk(chunkIndex) {
+        var keep = {};
+        keep[chunkIndex] = true;
+        if (chunkIndex + 1 < (plan ? plan.chunks.length : 0)) keep[chunkIndex + 1] = true;
+        if (chunkIndex - 1 >= 0) keep[chunkIndex - 1] = true;
+
+        for (var key in chunkBuffer) {
+            if (!Object.prototype.hasOwnProperty.call(chunkBuffer, key)) continue;
+            var k = parseInt(key, 10);
+            if (!keep[k]) {
+                delete chunkBuffer[k];
+            }
+        }
+        rebuildTrackCache();
+        currentChunkIndex = chunkIndex;
+    }
+
+    function resetInterpolationCaches() {
+        for (var i = 0; i < allTracks.length; i++) {
+            allTracks[i]._interpIndex = 0;
+        }
+    }
+
+    function findChunkIndexForTime(t) {
+        if (!plan || !plan.chunks || plan.chunks.length === 0) return -1;
+        for (var i = 0; i < plan.chunks.length; i++) {
+            if (t >= plan.chunks[i].start && t < plan.chunks[i].end) {
+                return i;
+            }
+        }
+        return plan.chunks.length - 1;
     }
 
     function updateVisibleAircraft() {
@@ -292,8 +404,8 @@
         });
 
         // Apply render budget
-        var detailed = visible.slice(0, RENDER_BUDGET);
-        var dots = visible.slice(RENDER_BUDGET);
+        var detailed = visible.slice(0, currentRenderBudget);
+        var dots = visible.slice(currentRenderBudget);
 
         onAircraftUpdate(detailed, dots, visible.length);
     }
@@ -318,10 +430,35 @@
             return { lat: poly[last][1], lon: poly[last][2], altitude: poly[last][3], heading: computeHeading(poly, last - 1) };
         }
 
-        // Find surrounding points and interpolate
-        for (var i = 0; i < poly.length - 1; i++) {
+        // Use a rolling index cache to avoid scanning from the start each frame.
+        var i = track._interpIndex || 0;
+        if (i < 0) i = 0;
+        if (i > poly.length - 2) i = poly.length - 2;
+
+        while (i < poly.length - 2 && t > poly[i + 1][0]) {
+            i++;
+        }
+        while (i > 0 && t < poly[i][0]) {
+            i--;
+        }
+        track._interpIndex = i;
+
+        if (t >= poly[i][0] && t <= poly[i + 1][0]) {
+            var dt = poly[i + 1][0] - poly[i][0];
+            var frac = dt > 0 ? (t - poly[i][0]) / dt : 0;
+
+            return {
+                lat: poly[i][1] + frac * (poly[i + 1][1] - poly[i][1]),
+                lon: poly[i][2] + frac * (poly[i + 1][2] - poly[i][2]),
+                altitude: poly[i][3] + frac * ((poly[i + 1][3] || 0) - (poly[i][3] || 0)),
+                heading: computeHeading(poly, i)
+            };
+        }
+
+        // Fallback for edge cases when there are duplicate timestamps.
+        for (i = 0; i < poly.length - 1; i++) {
             if (t >= poly[i][0] && t <= poly[i + 1][0]) {
-                var dt = poly[i + 1][0] - poly[i][0];
+                dt = poly[i + 1][0] - poly[i][0];
                 var frac = dt > 0 ? (t - poly[i][0]) / dt : 0;
 
                 return {
@@ -373,7 +510,9 @@
         seek: seek,
         setSpeed: setSpeed,
         setAltitudeFilter: setAltitudeFilter,
+        setRenderBudget: setRenderBudget,
         setMapCenter: setMapCenter,
+        getTrackPolylineByIcao: getTrackPolylineByIcao,
         getState: getState
     };
 })();

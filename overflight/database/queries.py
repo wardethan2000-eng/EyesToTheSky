@@ -45,7 +45,10 @@ def _bounding_box(lat, lon, radius_miles):
     the radius are captured; exact distances are refined with haversine.
     """
     lat_delta = radius_miles / 69.0  # ~69 miles per degree of latitude
-    lon_delta = radius_miles / (69.0 * math.cos(math.radians(lat)))
+    cos_lat = math.cos(math.radians(lat))
+    if abs(cos_lat) < 1e-6:
+        cos_lat = 1e-6 if cos_lat >= 0 else -1e-6
+    lon_delta = radius_miles / (69.0 * cos_lat)
 
     return (
         lat - lat_delta,

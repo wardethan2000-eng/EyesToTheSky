@@ -24,7 +24,11 @@ from overflight.config import (
     RETENTION_HOURS,
 )
 from overflight.database.queries import enrich_results, find_flights_near
-from overflight.database.tracks import get_track_density, get_tracks_near
+from overflight.database.tracks import (
+    get_track_density,
+    get_tracks_near,
+    get_unique_aircraft_count,
+)
 from overflight.ingestion.zipcode import resolve_zipcode
 from overflight.webapp import get_enrichment_db, get_flight_db
 
@@ -86,20 +90,26 @@ def api_flights():
 
     radius = min(max(radius, 1), MAX_RADIUS_MILES)
 
+    flight_conn = None
     try:
         flight_conn = get_flight_db()
         results = find_flights_near(flight_conn, lat, lon, radius_miles=radius)
-        flight_conn.close()
     except Exception:
         logger.exception("Flight query failed")
         return jsonify({"error": "Database query failed"}), 500
+    finally:
+        if flight_conn is not None:
+            flight_conn.close()
 
+    enrichment_conn = None
     try:
         enrichment_conn = get_enrichment_db()
         enrich_results(results, enrichment_conn)
-        enrichment_conn.close()
     except Exception:
         logger.warning("Enrichment failed, returning unenriched results", exc_info=True)
+    finally:
+        if enrichment_conn is not None:
+            enrichment_conn.close()
 
     # Build response with location cookie
     response = make_response(jsonify({
@@ -199,27 +209,36 @@ def api_tracks():
         if not phases:
             phases = None
 
+    flight_conn = None
     try:
         flight_conn = get_flight_db()
-        tracks = get_tracks_near(flight_conn, lat, lon, radius, start_time=start, end_time=end)
+        tracks = get_tracks_near(
+            flight_conn,
+            lat,
+            lon,
+            radius,
+            start_time=start,
+            end_time=end,
+            min_alt=min_alt,
+            phases=phases,
+        )
 
-        # Get total density for 24h window
+        # Get total density for 24h window as unique aircraft count.
         full_start = now - (RETENTION_HOURS * 3600)
-        total_in_area = get_track_density(flight_conn, lat, lon, radius,
-                                          start_time=full_start, end_time=now)
-        flight_conn.close()
+        total_in_area = get_unique_aircraft_count(
+            flight_conn,
+            lat,
+            lon,
+            radius,
+            start_time=full_start,
+            end_time=now,
+        )
     except Exception:
         logger.exception("Track query failed")
         return jsonify({"error": "Database query failed"}), 500
-
-    # Apply altitude filter
-    if min_alt > 0:
-        tracks = [t for t in tracks if (t.get("min_altitude") or 0) >= min_alt
-                  or (t.get("max_altitude") or 0) >= min_alt]
-
-    # Apply phase filter
-    if phases:
-        tracks = [t for t in tracks if t.get("phase") in phases]
+    finally:
+        if flight_conn is not None:
+            flight_conn.close()
 
     # Determine density classification and suggestion
     density, suggested_min_alt = _classify_density(total_in_area)
@@ -267,15 +286,18 @@ def api_track_detail(icao24):
 
     icao24 = icao24.lower().strip()
 
+    enrichment_conn = None
     try:
         enrichment_conn = get_enrichment_db()
         from overflight.database.enrichment import lookup_aircraft
 
         aircraft = lookup_aircraft(enrichment_conn, icao24)
-        enrichment_conn.close()
     except Exception:
         logger.exception("Enrichment lookup failed")
         return jsonify({"error": "Enrichment lookup failed"}), 500
+    finally:
+        if enrichment_conn is not None:
+            enrichment_conn.close()
 
     if aircraft is None:
         return jsonify({
@@ -299,6 +321,7 @@ def api_track_detail(icao24):
 
     return jsonify({
         "icao24": icao24,
+        "callsign": None,
         "registration": aircraft.get("registration"),
         "manufacturer": aircraft.get("manufacturer"),
         "model": aircraft.get("model"),
@@ -341,13 +364,21 @@ def api_tracks_plan():
     full_start = now - (RETENTION_HOURS * 3600)
     total_duration = RETENTION_HOURS * 3600
 
+    flight_conn = None
     try:
         flight_conn = get_flight_db()
-        total_count = get_track_density(flight_conn, lat, lon, radius,
-                                        start_time=full_start, end_time=now)
+        total_unique_aircraft = get_unique_aircraft_count(
+            flight_conn,
+            lat,
+            lon,
+            radius,
+            start_time=full_start,
+            end_time=now,
+            min_alt=min_alt,
+        )
 
         # Determine chunk size based on density
-        density, suggested_min_alt = _classify_density(total_count)
+        density, suggested_min_alt = _classify_density(total_unique_aircraft)
         chunk_seconds = _chunk_seconds_for_density(density)
 
         # Build chunk plan
@@ -355,19 +386,27 @@ def api_tracks_plan():
         chunk_start = full_start
         while chunk_start < now:
             chunk_end = min(chunk_start + chunk_seconds, now)
-            estimated = get_track_density(flight_conn, lat, lon, radius,
-                                          start_time=chunk_start, end_time=chunk_end)
+            estimated = get_track_density(
+                flight_conn,
+                lat,
+                lon,
+                radius,
+                start_time=chunk_start,
+                end_time=chunk_end,
+                min_alt=min_alt,
+            )
             chunks.append({
                 "start": chunk_start,
                 "end": chunk_end,
                 "estimated_tracks": estimated,
             })
             chunk_start = chunk_end
-
-        flight_conn.close()
     except Exception:
         logger.exception("Track plan query failed")
         return jsonify({"error": "Database query failed"}), 500
+    finally:
+        if flight_conn is not None:
+            flight_conn.close()
 
     return jsonify({
         "total_duration_seconds": total_duration,
@@ -375,7 +414,8 @@ def api_tracks_plan():
         "chunks": chunks,
         "density": density,
         "suggested_min_alt": suggested_min_alt,
-        "total_unique_aircraft": total_count,
+        "total_unique_aircraft": total_unique_aircraft,
+        "query": {"lat": lat, "lon": lon, "radius": radius, "min_alt": min_alt},
     })
 
 
@@ -416,13 +456,16 @@ def api_status():
 
     status = {"status": "ok", "timestamp": int(time.time())}
 
+    flight_conn = None
     try:
         flight_conn = get_flight_db()
         status["record_count"] = get_record_count(flight_conn)
         oldest = get_oldest_record_age(flight_conn)
         status["oldest_record_hours"] = round(oldest, 2) if oldest else None
-        flight_conn.close()
     except Exception:
         status["database"] = "unavailable"
+    finally:
+        if flight_conn is not None:
+            flight_conn.close()
 
     return jsonify(status)
