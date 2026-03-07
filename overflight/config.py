@@ -43,6 +43,27 @@ if _bbox_env:
 # Preset: Continental US bounding box
 CONUS_BBOX = (24.396308, 49.384358, -125.0, -66.93457)
 
+# --- Track Building ---
+TRACK_GAP_THRESHOLD_SECONDS = int(os.environ.get("OVERFLIGHT_TRACK_GAP", "300"))
+SIMPLIFICATION_EPSILON = float(os.environ.get("OVERFLIGHT_SIMPLIFY_EPSILON", "0.001"))
+TRACK_BUILD_INTERVAL_SECONDS = int(os.environ.get("OVERFLIGHT_TRACK_BUILD_INTERVAL", "60"))
+
+# --- Playback ---
+PLAYBACK_SPEED_RATIO = float(os.environ.get("OVERFLIGHT_PLAYBACK_SPEED", "960"))
+# 960 = 24 hours / 90 seconds
+RENDER_BUDGET_MAX = int(os.environ.get("OVERFLIGHT_RENDER_BUDGET", "150"))
+CHUNK_SIZE_LOW_DENSITY_HOURS = 4
+CHUNK_SIZE_MEDIUM_DENSITY_HOURS = 1
+CHUNK_SIZE_HIGH_DENSITY_MINUTES = 30
+
+# --- Altitude Filter Presets (meters) ---
+ALTITUDE_PRESETS = {
+    "all": 0,
+    "above_1000ft": 304.8,
+    "above_5000ft": 1524.0,
+    "above_20000ft": 6096.0,
+}
+
 # --- Web App ---
 FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-in-production")
 FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"

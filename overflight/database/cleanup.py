@@ -67,3 +67,29 @@ def get_oldest_record_age(conn):
         age_seconds = int(time.time()) - row[0]
         return age_seconds / 3600.0
     return None
+
+
+def purge_old_tracks(conn, retention_hours=None):
+    """
+    Delete track segments older than the retention period.
+
+    Args:
+        conn: SQLite connection to the flight database.
+        retention_hours: Hours of data to retain. Defaults to config value.
+
+    Returns:
+        Number of rows deleted.
+    """
+    if retention_hours is None:
+        retention_hours = RETENTION_HOURS
+
+    cutoff = int(time.time()) - (retention_hours * 3600)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM track_segments WHERE end_time < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+
+    if deleted > 0:
+        logger.info("Purged %d track segments older than %d hours", deleted, retention_hours)
+
+    return deleted

@@ -17,7 +17,12 @@ import logging
 import sys
 
 from overflight.config import DB_PATH, ENRICHMENT_DB_PATH, ZIPCODE_DB_PATH
-from overflight.database.schema import init_enrichment_db, init_flight_db, init_zipcode_db
+from overflight.database.schema import (
+    init_enrichment_db,
+    init_flight_db,
+    init_tracks_db,
+    init_zipcode_db,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +41,11 @@ def main():
     parser.add_argument(
         "--zipcode-csv",
         help="Path to US zip code CSV to load into zip code DB",
+    )
+    parser.add_argument(
+        "--build-tracks",
+        action="store_true",
+        help="Build track segments from existing state vectors after initialization",
     )
     parser.add_argument(
         "--flight-db",
@@ -59,6 +69,12 @@ def main():
     conn, has_spatialite = init_flight_db(args.flight_db)
     logger.info("Flight database ready (SpatiaLite: %s)", has_spatialite)
     conn.close()
+
+    # Initialize track segments table
+    logger.info("Initializing track segments table in: %s", args.flight_db)
+    conn, _ = init_tracks_db(args.flight_db, use_spatialite=False)
+    conn.close()
+    logger.info("Track segments table ready")
 
     # Initialize enrichment database
     logger.info("Initializing enrichment database: %s", args.enrichment_db)
@@ -87,6 +103,17 @@ def main():
         logger.info("Loading zip code data from: %s", args.zipcode_csv)
         count = load_zipcode_csv(args.zipcode_csv, args.zipcode_db)
         logger.info("Loaded %d zip codes", count)
+
+    # Build track segments if requested
+    if args.build_tracks:
+        from overflight.database.tracks import build_tracks
+
+        logger.info("Building track segments from existing state vectors...")
+        conn, _ = init_flight_db(args.flight_db, use_spatialite=False)
+        init_tracks_db(args.flight_db, use_spatialite=False)
+        count = build_tracks(conn)
+        conn.close()
+        logger.info("Built %d track segments", count)
 
     logger.info("Database initialization complete!")
 

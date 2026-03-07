@@ -170,3 +170,73 @@ def init_zipcode_db(db_path):
 
     conn.commit()
     return conn
+
+
+def init_tracks_db(db_path, use_spatialite=True):
+    """
+    Initialize the track segments table in the flight database.
+
+    Creates the track_segments table for storing pre-built polyline
+    segments that group raw state vectors into per-aircraft tracks.
+    """
+    conn, has_spatialite = get_connection(db_path, use_spatialite)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS track_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            icao24 TEXT NOT NULL,
+            callsign TEXT,
+            phase TEXT NOT NULL DEFAULT 'enroute',
+
+            polyline TEXT NOT NULL,
+            point_count INTEGER NOT NULL,
+
+            start_time INTEGER NOT NULL,
+            end_time INTEGER NOT NULL,
+
+            min_altitude REAL,
+            max_altitude REAL,
+
+            min_lat REAL NOT NULL,
+            max_lat REAL NOT NULL,
+            min_lon REAL NOT NULL,
+            max_lon REAL NOT NULL,
+
+            avg_velocity REAL,
+            avg_heading REAL,
+
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tracks_time
+        ON track_segments (start_time, end_time)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tracks_icao24
+        ON track_segments (icao24)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tracks_bbox
+        ON track_segments (min_lat, max_lat, min_lon, max_lon)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tracks_phase
+        ON track_segments (phase)
+    """)
+
+    # Track build metadata table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS track_build_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+
+    conn.commit()
+    return conn, has_spatialite

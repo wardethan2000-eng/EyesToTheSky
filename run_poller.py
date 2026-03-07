@@ -24,9 +24,15 @@ from overflight.config import (
     DB_PATH,
     INGEST_BBOX,
     POLL_INTERVAL_SECONDS,
+    TRACK_BUILD_INTERVAL_SECONDS,
 )
-from overflight.database.cleanup import get_record_count, purge_old_records, vacuum_database
-from overflight.database.schema import init_flight_db
+from overflight.database.cleanup import (
+    get_record_count,
+    purge_old_records,
+    purge_old_tracks,
+    vacuum_database,
+)
+from overflight.database.schema import init_flight_db, init_tracks_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,19 +45,46 @@ shutdown_event = threading.Event()
 
 
 def cleanup_worker(db_path, interval_minutes):
-    """Background thread that periodically purges old records."""
+    """Background thread that periodically purges old records and rebuilds tracks."""
+    from overflight.database.tracks import build_tracks_incremental
+
     while not shutdown_event.is_set():
         shutdown_event.wait(interval_minutes * 60)
         if shutdown_event.is_set():
             break
         try:
             conn, _ = init_flight_db(db_path, use_spatialite=False)
+            init_tracks_db(db_path, use_spatialite=False)
             deleted = purge_old_records(conn)
+            tracks_deleted = purge_old_tracks(conn)
+            tracks_built = build_tracks_incremental(conn)
             count = get_record_count(conn)
             conn.close()
-            logger.info("Cleanup: purged %d records, %d remaining", deleted, count)
+            logger.info(
+                "Cleanup: purged %d records, %d track segments; built %d tracks; %d records remaining",
+                deleted, tracks_deleted, tracks_built, count,
+            )
         except Exception:
             logger.exception("Cleanup error")
+
+
+def track_build_worker(db_path, interval_seconds):
+    """Background thread that incrementally builds track segments."""
+    from overflight.database.tracks import build_tracks_incremental
+
+    while not shutdown_event.is_set():
+        shutdown_event.wait(interval_seconds)
+        if shutdown_event.is_set():
+            break
+        try:
+            conn, _ = init_flight_db(db_path, use_spatialite=False)
+            init_tracks_db(db_path, use_spatialite=False)
+            count = build_tracks_incremental(conn)
+            conn.close()
+            if count > 0:
+                logger.debug("Track build: created %d segments", count)
+        except Exception:
+            logger.exception("Track build error")
 
 
 def signal_handler(signum, frame):
@@ -81,7 +114,24 @@ def main():
         default=DB_PATH,
         help=f"Path to flight database (default: {DB_PATH})",
     )
+    parser.add_argument(
+        "--rebuild-tracks",
+        action="store_true",
+        help="Rebuild all track segments from current state vectors and exit",
+    )
     args = parser.parse_args()
+
+    if args.rebuild_tracks:
+        from overflight.database.tracks import build_tracks
+
+        conn, _ = init_flight_db(args.db_path, use_spatialite=False)
+        init_tracks_db(args.db_path, use_spatialite=False)
+        conn.execute("DELETE FROM track_segments")
+        conn.commit()
+        count = build_tracks(conn)
+        logger.info("Rebuilt %d track segments", count)
+        conn.close()
+        return
 
     if args.cleanup_only:
         conn, _ = init_flight_db(args.db_path, use_spatialite=False)
@@ -110,6 +160,9 @@ def main():
         bbox,
     )
 
+    # Initialize tracks table
+    init_tracks_db(args.db_path, use_spatialite=False)
+
     # Start cleanup background thread
     cleanup_thread = threading.Thread(
         target=cleanup_worker,
@@ -117,6 +170,14 @@ def main():
         daemon=True,
     )
     cleanup_thread.start()
+
+    # Start track building background thread
+    track_thread = threading.Thread(
+        target=track_build_worker,
+        args=(args.db_path, TRACK_BUILD_INTERVAL_SECONDS),
+        daemon=True,
+    )
+    track_thread.start()
 
     consecutive_errors = 0
     while not shutdown_event.is_set():
