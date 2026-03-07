@@ -47,6 +47,17 @@ class TracksAPITestCase(unittest.TestCase):
                 "g7h8i9", "AAL300", 40.6413, -73.7781,
                 0, 5, 90, 0, 1, self.now - 900 + i * 10,
             ))
+        # Departure aircraft with ground-to-air transition near JFK
+        for i in range(4):
+            rows.append((
+                "dep001", "JBU111", 40.6413, -73.7781,
+                0, 10, 88, 0, 1, self.now - 1400 + i * 10,
+            ))
+        for i in range(8):
+            rows.append((
+                "dep001", "JBU111", 40.6413 + i * 0.008, -73.7781 + i * 0.007,
+                400 + i * 300, 180, 92, 7, 0, self.now - 1360 + i * 10,
+            ))
         # Far away aircraft near Chicago — should NOT appear in NYC queries
         for i in range(10):
             rows.append((
@@ -167,6 +178,22 @@ class TestTracksEndpoint(TracksAPITestCase):
         track = data["tracks"][0]
         for field in ["id", "icao24", "phase", "polyline", "start_time", "end_time"]:
             self.assertIn(field, track)
+        for field in [
+            "liftoff_lat", "liftoff_lon", "liftoff_heading", "liftoff_time",
+            "touchdown_lat", "touchdown_lon", "approach_heading", "touchdown_time",
+        ]:
+            self.assertIn(field, track)
+
+    def test_tracks_departure_includes_liftoff_metadata(self):
+        resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=50&phase=departure")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertGreater(len(data["tracks"]), 0)
+        dep = data["tracks"][0]
+        self.assertEqual(dep["phase"], "departure")
+        self.assertIsNotNone(dep["liftoff_lat"])
+        self.assertIsNotNone(dep["liftoff_lon"])
+        self.assertIsNotNone(dep["liftoff_time"])
 
     def test_tracks_altitude_filter(self):
         resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=25&min_alt=5000")

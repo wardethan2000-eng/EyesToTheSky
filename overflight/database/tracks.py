@@ -19,6 +19,9 @@ from overflight.utils.simplify import simplify_track
 
 logger = logging.getLogger(__name__)
 
+MIN_GROUND_POINTS_FOR_TRANSITION = 2
+MIN_DEPARTURE_CLIMB_FPM = 500.0
+
 
 def _safe_lon_delta(lat, radius_miles):
     """Return longitude delta while avoiding divide-by-zero near poles."""
@@ -28,7 +31,53 @@ def _safe_lon_delta(lat, radius_miles):
     return radius_miles / (69.0 * cos_lat)
 
 
-def _classify_phase(points):
+def _estimate_heading(point_a, point_b):
+    """Estimate heading in degrees from point_a to point_b in lat/lon space."""
+    if not point_a or not point_b:
+        return None
+    d_lon = point_b["longitude"] - point_a["longitude"]
+    d_lat = point_b["latitude"] - point_a["latitude"]
+    if abs(d_lon) < 1e-9 and abs(d_lat) < 1e-9:
+        return None
+    heading = math.degrees(math.atan2(d_lon, d_lat)) % 360
+    return heading
+
+
+def _max_climb_rate_fpm(points, liftoff_idx):
+    """
+    Estimate the strongest post-liftoff climb rate in feet per minute.
+
+    Altitudes in state_vectors are meters, so we convert m/s to ft/min.
+    """
+    if liftoff_idx < 0 or liftoff_idx >= len(points):
+        return None
+
+    start_point = points[liftoff_idx]
+    start_alt = start_point.get("altitude")
+    start_ts = start_point.get("timestamp")
+    if start_alt is None or start_ts is None:
+        return None
+
+    max_rate = None
+    max_scan_idx = min(len(points), liftoff_idx + 6)
+    for idx in range(liftoff_idx + 1, max_scan_idx):
+        p = points[idx]
+        if p.get("on_ground"):
+            break
+        alt = p.get("altitude")
+        ts = p.get("timestamp")
+        if alt is None or ts is None or ts <= start_ts:
+            continue
+
+        rate_m_per_sec = (alt - start_alt) / float(ts - start_ts)
+        rate_fpm = rate_m_per_sec * 196.850394
+        if max_rate is None or rate_fpm > max_rate:
+            max_rate = rate_fpm
+
+    return max_rate
+
+
+def _classify_phase_and_metadata(points):
     """
     Classify a track segment's flight phase based on on_ground transitions.
 
@@ -36,10 +85,21 @@ def _classify_phase(points):
         points: List of dicts with at least 'on_ground' and 'altitude' keys.
 
     Returns:
-        One of 'ground', 'departure', 'arrival', 'enroute'.
+        Tuple of (phase, metadata_dict).
     """
+    metadata = {
+        "liftoff_lat": None,
+        "liftoff_lon": None,
+        "liftoff_heading": None,
+        "liftoff_time": None,
+        "touchdown_lat": None,
+        "touchdown_lon": None,
+        "approach_heading": None,
+        "touchdown_time": None,
+    }
+
     if not points:
-        return "enroute"
+        return "enroute", metadata
 
     first_on_ground = bool(points[0]["on_ground"])
     last_on_ground = bool(points[-1]["on_ground"])
@@ -48,9 +108,9 @@ def _classify_phase(points):
     all_airborne = all(not p["on_ground"] for p in points)
 
     if all_on_ground:
-        return "ground"
+        return "ground", metadata
     if all_airborne:
-        return "enroute"
+        return "enroute", metadata
     def _first_last_altitude(rows):
         alts = [p.get("altitude") for p in rows if p.get("altitude") is not None]
         if len(alts) < 2:
@@ -59,17 +119,71 @@ def _classify_phase(points):
 
     start_alt, end_alt = _first_last_altitude(points)
 
-    if first_on_ground and not last_on_ground:
-        # Require a net climb when altitude data is available.
+    # Detect transitions once so we can enrich the chosen phase.
+    dep_idx = None
+    arr_idx = None
+    for i in range(1, len(points)):
+        prev_ground = bool(points[i - 1]["on_ground"])
+        curr_ground = bool(points[i]["on_ground"])
+        if dep_idx is None and prev_ground and not curr_ground:
+            dep_idx = i
+        if arr_idx is None and (not prev_ground) and curr_ground:
+            arr_idx = i
+
+    if first_on_ground and not last_on_ground and dep_idx is not None:
+        ground_prefix = points[:dep_idx]
+        if len(ground_prefix) >= MIN_GROUND_POINTS_FOR_TRANSITION and all(p["on_ground"] for p in ground_prefix):
+            climb_rate_fpm = _max_climb_rate_fpm(points, dep_idx)
+            if climb_rate_fpm is not None and climb_rate_fpm >= MIN_DEPARTURE_CLIMB_FPM:
+                liftoff = points[dep_idx]
+                heading = liftoff.get("heading")
+                if heading is None and dep_idx + 1 < len(points):
+                    heading = _estimate_heading(liftoff, points[dep_idx + 1])
+                metadata.update({
+                    "liftoff_lat": liftoff["latitude"],
+                    "liftoff_lon": liftoff["longitude"],
+                    "liftoff_heading": heading,
+                    "liftoff_time": liftoff["timestamp"],
+                })
+                return "departure", metadata
+
+        # Fallback keeps backward-compatible departure classification.
         if start_alt is None or end_alt is None or end_alt >= start_alt:
-            return "departure"
-    if not first_on_ground and last_on_ground:
-        # Require a net descent when altitude data is available.
+            return "departure", metadata
+
+    if (not first_on_ground) and last_on_ground and arr_idx is not None:
+        ground_suffix = points[arr_idx:]
+        airborne_prefix = points[:arr_idx]
+        if (
+            len(ground_suffix) >= MIN_GROUND_POINTS_FOR_TRANSITION
+            and airborne_prefix
+            and all(p["on_ground"] for p in ground_suffix)
+        ):
+            touchdown = points[arr_idx]
+            approach_heading = None
+            if arr_idx - 1 >= 0:
+                prior = points[arr_idx - 1]
+                approach_heading = prior.get("heading")
+                if approach_heading is None:
+                    approach_heading = _estimate_heading(prior, touchdown)
+
+            metadata.update({
+                "touchdown_lat": touchdown["latitude"],
+                "touchdown_lon": touchdown["longitude"],
+                "approach_heading": approach_heading,
+                "touchdown_time": touchdown["timestamp"],
+            })
+
+            # Require a net descent when altitude data is available.
+            if start_alt is None or end_alt is None or end_alt <= start_alt:
+                return "arrival", metadata
+
+        # Fallback keeps backward-compatible arrival classification.
         if start_alt is None or end_alt is None or end_alt <= start_alt:
-            return "arrival"
+            return "arrival", metadata
 
     # Mixed — default to enroute
-    return "enroute"
+    return "enroute", metadata
 
 
 def _segment_points(rows):
@@ -134,7 +248,7 @@ def _build_segment_record(icao24, points):
     if len(points) < 2:
         return None
 
-    phase = _classify_phase(points)
+    phase, phase_meta = _classify_phase_and_metadata(points)
 
     # Build polyline as [(timestamp, lat, lon, altitude), ...]
     raw_polyline = [
@@ -196,6 +310,14 @@ def _build_segment_record(icao24, points):
         max_lon,
         avg_velocity,
         avg_heading,
+        phase_meta.get("liftoff_lat"),
+        phase_meta.get("liftoff_lon"),
+        phase_meta.get("liftoff_heading"),
+        phase_meta.get("liftoff_time"),
+        phase_meta.get("touchdown_lat"),
+        phase_meta.get("touchdown_lon"),
+        phase_meta.get("approach_heading"),
+        phase_meta.get("touchdown_time"),
         int(time.time()),
     )
 
@@ -249,8 +371,11 @@ def build_tracks(conn, since_timestamp=None):
                     (icao24, callsign, phase, polyline, point_count,
                      start_time, end_time, min_altitude, max_altitude,
                      min_lat, max_lat, min_lon, max_lon,
-                     avg_velocity, avg_heading, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     avg_velocity, avg_heading,
+                     liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time,
+                     touchdown_lat, touchdown_lon, approach_heading, touchdown_time,
+                     created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, segments)
             conn.commit()
         except Exception:

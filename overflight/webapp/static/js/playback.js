@@ -14,6 +14,8 @@
     var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 960;
     var RENDER_BUDGET = window.OVERFLIGHT.renderBudgetMax || 150;
     var TARGET_FPS = 30;
+    var DEPARTURE_ANIMATION_SECONDS = 30;
+    var DEPARTURE_BLEND_SECONDS = 8;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
@@ -398,6 +400,13 @@
 
         // Sort by distance from map center (nearest first)
         visible.sort(function (a, b) {
+            // Ground traffic is lowest rendering priority.
+            var aGround = a.phase === "ground" ? 1 : 0;
+            var bGround = b.phase === "ground" ? 1 : 0;
+            if (aGround !== bGround) {
+                return aGround - bGround;
+            }
+
             var dA = quickDist(a.lat, a.lon, mapCenterLat, mapCenterLon);
             var dB = quickDist(b.lat, b.lon, mapCenterLat, mapCenterLon);
             return dA - dB;
@@ -411,6 +420,110 @@
     }
 
     function interpolatePosition(track, t) {
+        if (track.phase === "ground") {
+            return getGroundPosition(track);
+        }
+
+        if (track.phase === "departure") {
+            var scriptedDeparture = getDepartureAnimatedPosition(track, t);
+            if (scriptedDeparture) {
+                return scriptedDeparture;
+            }
+        }
+
+        return getPolylinePositionAtTime(track, t);
+    }
+
+    function getGroundPosition(track) {
+        var poly = track.polyline;
+        if (!poly || poly.length === 0) return null;
+
+        if (!track._groundAnchor) {
+            var anchor = poly[0];
+            track._groundAnchor = {
+                lat: anchor[1],
+                lon: anchor[2],
+                altitude: anchor[3] || 0,
+                heading: track.avg_heading || 0
+            };
+        }
+        return track._groundAnchor;
+    }
+
+    function getDepartureAnimatedPosition(track, t) {
+        var liftoffTime = track.liftoff_time;
+        var liftoffLat = track.liftoff_lat;
+        var liftoffLon = track.liftoff_lon;
+        if (liftoffTime == null || liftoffLat == null || liftoffLon == null) {
+            return null;
+        }
+
+        var heading = track.liftoff_heading;
+        if (heading == null) {
+            heading = track.avg_heading || 0;
+        }
+
+        var liftoffDataPos = getPolylinePositionAtTime(track, liftoffTime);
+        var baseAltitude = liftoffDataPos ? (liftoffDataPos.altitude || 0) : 0;
+
+        if (t < liftoffTime) {
+            // Hold just behind the liftoff point to imply runway position.
+            var pre = offsetByHeading(liftoffLat, liftoffLon, (heading + 180) % 360, 0.00012);
+            return {
+                lat: pre.lat,
+                lon: pre.lon,
+                altitude: 0,
+                heading: heading
+            };
+        }
+
+        var animEnd = liftoffTime + DEPARTURE_ANIMATION_SECONDS;
+        if (t <= animEnd) {
+            var progress = (t - liftoffTime) / DEPARTURE_ANIMATION_SECONDS;
+            if (progress < 0) progress = 0;
+            if (progress > 1) progress = 1;
+
+            // Ease-in acceleration and climb during liftoff.
+            var eased = progress * progress;
+            var scriptedDist = 0.00008 + (0.00135 * eased);
+            var scriptedPoint = offsetByHeading(liftoffLat, liftoffLon, heading, scriptedDist);
+            var scripted = {
+                lat: scriptedPoint.lat,
+                lon: scriptedPoint.lon,
+                altitude: baseAltitude + (350 * eased),
+                heading: heading
+            };
+
+            // Blend into data-driven position near the end to avoid popping.
+            if (t >= animEnd - DEPARTURE_BLEND_SECONDS) {
+                var blendProgress = (t - (animEnd - DEPARTURE_BLEND_SECONDS)) / DEPARTURE_BLEND_SECONDS;
+                if (blendProgress < 0) blendProgress = 0;
+                if (blendProgress > 1) blendProgress = 1;
+                var dataPos = getPolylinePositionAtTime(track, t);
+                if (dataPos) {
+                    scripted.lat = scripted.lat + (dataPos.lat - scripted.lat) * blendProgress;
+                    scripted.lon = scripted.lon + (dataPos.lon - scripted.lon) * blendProgress;
+                    scripted.altitude = scripted.altitude + ((dataPos.altitude || 0) - scripted.altitude) * blendProgress;
+                    scripted.heading = scripted.heading + ((dataPos.heading || scripted.heading) - scripted.heading) * blendProgress;
+                }
+            }
+
+            return scripted;
+        }
+
+        return null;
+    }
+
+    function offsetByHeading(lat, lon, headingDeg, distDeg) {
+        var rad = headingDeg * Math.PI / 180;
+        var dLat = Math.cos(rad) * distDeg;
+        var cosLat = Math.cos(lat * Math.PI / 180);
+        if (Math.abs(cosLat) < 1e-6) cosLat = 1e-6;
+        var dLon = (Math.sin(rad) * distDeg) / cosLat;
+        return { lat: lat + dLat, lon: lon + dLon };
+    }
+
+    function getPolylinePositionAtTime(track, t) {
         var poly = track.polyline;
         if (!poly || poly.length === 0) return null;
 
@@ -458,7 +571,7 @@
         // Fallback for edge cases when there are duplicate timestamps.
         for (i = 0; i < poly.length - 1; i++) {
             if (t >= poly[i][0] && t <= poly[i + 1][0]) {
-                dt = poly[i + 1][0] - poly[i][0];
+                var dt = poly[i + 1][0] - poly[i][0];
                 var frac = dt > 0 ? (t - poly[i][0]) / dt : 0;
 
                 return {

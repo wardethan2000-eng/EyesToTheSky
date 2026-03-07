@@ -154,6 +154,74 @@ class TestTrackBuilding(unittest.TestCase):
         cursor.execute("SELECT phase FROM track_segments")
         self.assertEqual(cursor.fetchone()[0], "arrival")
 
+    def test_departure_metadata_captures_liftoff(self):
+        """Departure segments store liftoff position/time/heading metadata."""
+        rows = []
+        # Ground roll
+        for i in range(4):
+            rows.append((
+                "dep123", "DEP100", 40.6413, -73.7781,
+                0, 12, 90, 0, 1, self.now - 200 + i * 10
+            ))
+        # Airborne climb (rapid enough for departure detection)
+        for i in range(6):
+            rows.append((
+                "dep123", "DEP100", 40.6413 + i * 0.01, -73.7781 + i * 0.01,
+                400 + i * 250, 160, 90, 8, 0, self.now - 160 + i * 10
+            ))
+
+        _insert_state_vectors(self.conn, rows)
+        build_tracks(self.conn)
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT phase, liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time
+            FROM track_segments
+            WHERE icao24 = 'dep123'
+            """
+        )
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "departure")
+        self.assertIsNotNone(row[1])
+        self.assertIsNotNone(row[2])
+        self.assertIsNotNone(row[3])
+        self.assertIsNotNone(row[4])
+
+    def test_arrival_metadata_captures_touchdown(self):
+        """Arrival segments store touchdown and approach metadata."""
+        rows = []
+        # Descending approach
+        for i in range(6):
+            rows.append((
+                "arr123", "ARR200", 40.70 - i * 0.01, -73.80 + i * 0.002,
+                1200 - i * 150, 140, 185, -4, 0, self.now - 180 + i * 10
+            ))
+        # On ground after touchdown
+        for i in range(4):
+            rows.append((
+                "arr123", "ARR200", 40.64, -73.78,
+                0, 7, 180, 0, 1, self.now - 120 + i * 10
+            ))
+
+        _insert_state_vectors(self.conn, rows)
+        build_tracks(self.conn)
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT phase, touchdown_lat, touchdown_lon, approach_heading, touchdown_time
+            FROM track_segments
+            WHERE icao24 = 'arr123'
+            """
+        )
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "arrival")
+        self.assertIsNotNone(row[1])
+        self.assertIsNotNone(row[2])
+        self.assertIsNotNone(row[3])
+        self.assertIsNotNone(row[4])
+
     def test_phase_classification_ground(self):
         """All on-ground points classified as 'ground'."""
         rows = [

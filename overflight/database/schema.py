@@ -206,9 +206,36 @@ def init_tracks_db(db_path, use_spatialite=True):
             avg_velocity REAL,
             avg_heading REAL,
 
+            -- Phase 4 metadata for improved ground/departure/arrival rendering
+            liftoff_lat REAL,
+            liftoff_lon REAL,
+            liftoff_heading REAL,
+            liftoff_time INTEGER,
+            touchdown_lat REAL,
+            touchdown_lon REAL,
+            approach_heading REAL,
+            touchdown_time INTEGER,
+
             created_at INTEGER NOT NULL
         )
     """)
+
+    # Ensure older databases created before Phase 4 receive the new columns.
+    cursor.execute("PRAGMA table_info(track_segments)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    migration_columns = {
+        "liftoff_lat": "REAL",
+        "liftoff_lon": "REAL",
+        "liftoff_heading": "REAL",
+        "liftoff_time": "INTEGER",
+        "touchdown_lat": "REAL",
+        "touchdown_lon": "REAL",
+        "approach_heading": "REAL",
+        "touchdown_time": "INTEGER",
+    }
+    for col_name, col_type in migration_columns.items():
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE track_segments ADD COLUMN {col_name} {col_type}")
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_tracks_time

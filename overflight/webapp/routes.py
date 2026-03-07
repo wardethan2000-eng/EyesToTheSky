@@ -258,6 +258,14 @@ def api_tracks():
             "max_altitude": t.get("max_altitude"),
             "avg_velocity": t.get("avg_velocity"),
             "avg_heading": t.get("avg_heading"),
+            "liftoff_lat": t.get("liftoff_lat"),
+            "liftoff_lon": t.get("liftoff_lon"),
+            "liftoff_heading": t.get("liftoff_heading"),
+            "liftoff_time": t.get("liftoff_time"),
+            "touchdown_lat": t.get("touchdown_lat"),
+            "touchdown_lon": t.get("touchdown_lon"),
+            "approach_heading": t.get("approach_heading"),
+            "touchdown_time": t.get("touchdown_time"),
         })
 
     return jsonify({
