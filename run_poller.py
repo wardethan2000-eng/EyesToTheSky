@@ -44,6 +44,32 @@ logger = logging.getLogger("overflight.poller")
 shutdown_event = threading.Event()
 
 
+def _parse_bbox(value):
+    """Parse CLI bbox argument as: min_lat,max_lat,min_lon,max_lon."""
+    if not value:
+        return None
+
+    try:
+        parts = [float(x.strip()) for x in value.split(",")]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("bbox values must be numeric") from exc
+
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "bbox must have 4 comma-separated values: min_lat,max_lat,min_lon,max_lon"
+        )
+
+    min_lat, max_lat, min_lon, max_lon = parts
+    if not (-90 <= min_lat <= 90 and -90 <= max_lat <= 90):
+        raise argparse.ArgumentTypeError("bbox latitude values must be between -90 and 90")
+    if not (-180 <= min_lon <= 180 and -180 <= max_lon <= 180):
+        raise argparse.ArgumentTypeError("bbox longitude values must be between -180 and 180")
+    if min_lat >= max_lat or min_lon >= max_lon:
+        raise argparse.ArgumentTypeError("bbox min values must be less than max values")
+
+    return (min_lat, max_lat, min_lon, max_lon)
+
+
 def cleanup_worker(db_path, interval_minutes):
     """Background thread that periodically purges old records and rebuilds tracks."""
     while not shutdown_event.is_set():
@@ -112,11 +138,84 @@ def main():
         help=f"Path to flight database (default: {DB_PATH})",
     )
     parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=POLL_INTERVAL_SECONDS,
+        help=(
+            "Polling interval in seconds "
+            f"(default from config: {POLL_INTERVAL_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--max-idle-backoff",
+        type=int,
+        default=300,
+        help=(
+            "Max seconds to wait between polls when repeated polls return no records "
+            "(default: 300)"
+        ),
+    )
+    parser.add_argument(
+        "--max-polls",
+        type=int,
+        default=0,
+        help=(
+            "Stop after N poll attempts (default: 0 = run forever). "
+            "Useful for low-credit testing."
+        ),
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one poll attempt, then exit.",
+    )
+    parser.add_argument(
+        "--bbox",
+        type=_parse_bbox,
+        help=(
+            "Override ingest bounding box with "
+            "min_lat,max_lat,min_lon,max_lon (e.g. 40.4,41.0,-74.3,-73.6)"
+        ),
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help=(
+            "Enable conservative defaults for API-credit-friendly testing: "
+            "forces CONUS bbox (unless --bbox provided), raises poll interval to >=60s, "
+            "and limits to 3 polls (unless overridden)."
+        ),
+    )
+    parser.add_argument(
         "--rebuild-tracks",
         action="store_true",
         help="Rebuild all track segments from current state vectors and exit",
     )
     args = parser.parse_args()
+
+    if args.poll_interval < 1:
+        parser.error("--poll-interval must be >= 1")
+    if args.max_idle_backoff < args.poll_interval:
+        parser.error("--max-idle-backoff must be >= --poll-interval")
+    if args.max_polls < 0:
+        parser.error("--max-polls must be >= 0")
+
+    if args.test_mode:
+        # Apply safer defaults for local/manual testing without overriding explicit flags.
+        if "--poll-interval" not in sys.argv and args.poll_interval < 60:
+            args.poll_interval = 60
+        if "--max-polls" not in sys.argv and args.max_polls == 0:
+            args.max_polls = 3
+        if args.bbox is None and not args.conus_only:
+            args.conus_only = True
+
+        logger.info(
+            "Test mode enabled: poll_interval=%ds, max_polls=%d, conus_only=%s, bbox=%s",
+            args.poll_interval,
+            args.max_polls,
+            args.conus_only,
+            args.bbox,
+        )
 
     if args.rebuild_tracks:
         from overflight.database.tracks import build_tracks
@@ -140,6 +239,9 @@ def main():
         conn.close()
         return
 
+    if args.once:
+        args.max_polls = 1
+
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -148,11 +250,16 @@ def main():
     from overflight.ingestion.poller import poll_once
 
     conn, has_spatialite = init_flight_db(args.db_path)
-    bbox = CONUS_BBOX if args.conus_only else INGEST_BBOX
+    bbox = args.bbox if args.bbox is not None else (CONUS_BBOX if args.conus_only else INGEST_BBOX)
 
     logger.info(
-        "Starting OverFlight poller (interval=%ds, spatialite=%s, bbox=%s)",
-        POLL_INTERVAL_SECONDS,
+        (
+            "Starting OverFlight poller "
+            "(interval=%ds, max_idle_backoff=%ds, max_polls=%s, spatialite=%s, bbox=%s)"
+        ),
+        args.poll_interval,
+        args.max_idle_backoff,
+        args.max_polls if args.max_polls > 0 else "unlimited",
         has_spatialite,
         bbox,
     )
@@ -177,24 +284,45 @@ def main():
     track_thread.start()
 
     consecutive_errors = 0
+    idle_polls = 0
+    poll_attempts = 0
+
     while not shutdown_event.is_set():
+        if args.max_polls and poll_attempts >= args.max_polls:
+            logger.info("Reached max poll attempts (%d), exiting", args.max_polls)
+            break
+
+        wait_seconds = args.poll_interval
         try:
             count = poll_once(conn, has_spatialite, bbox=bbox)
+            poll_attempts += 1
             if count > 0:
                 consecutive_errors = 0
+                idle_polls = 0
             else:
+                idle_polls += 1
                 logger.debug("Poll returned no records")
+
+                # Exponential backoff on empty polls to reduce API credit usage.
+                wait_seconds = min(
+                    args.poll_interval * (2 ** min(idle_polls, 4)),
+                    args.max_idle_backoff,
+                )
+                logger.info(
+                    "No records returned (idle streak=%d); next poll in %ds",
+                    idle_polls,
+                    wait_seconds,
+                )
         except Exception:
+            poll_attempts += 1
             consecutive_errors += 1
             logger.exception("Poll error (consecutive: %d)", consecutive_errors)
             if consecutive_errors >= 5:
-                backoff = min(consecutive_errors * POLL_INTERVAL_SECONDS, 300)
+                backoff = min(consecutive_errors * args.poll_interval, args.max_idle_backoff)
                 logger.warning("Backing off for %d seconds", backoff)
-                shutdown_event.wait(backoff)
-                if shutdown_event.is_set():
-                    break
+                wait_seconds = backoff
 
-        shutdown_event.wait(POLL_INTERVAL_SECONDS)
+        shutdown_event.wait(wait_seconds)
 
     conn.close()
     logger.info("Poller shut down cleanly")

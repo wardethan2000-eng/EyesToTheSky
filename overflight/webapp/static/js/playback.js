@@ -19,6 +19,8 @@
     var CHUNK_FETCH_RETRY_MAX = window.OVERFLIGHT.chunkFetchRetryMax || 3;
     var CHUNK_FETCH_BACKOFF_MS = window.OVERFLIGHT.chunkFetchBackoffMs || 700;
     var CHUNK_FAILURE_COOLDOWN_MS = window.OVERFLIGHT.chunkFailureCooldownMs || 15000;
+    var VISIBILITY_LEAD_SECONDS = 120;
+    var VISIBILITY_LINGER_SECONDS = 900;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
@@ -37,6 +39,7 @@
     var currentChunkIndex = -1;
     var lastRenderTime = 0;
     var failedChunkCooldown = {};
+    var initialChunkIndex = 0;
 
     // Callbacks set by map.js
     var onAircraftUpdate = null;  // fn(visibleAircraft: Array)
@@ -74,6 +77,7 @@
         allTracks = [];
         currentChunkIndex = -1;
         lastRenderTime = 0;
+        initialChunkIndex = 0;
 
         emitLoadingProgress("Fetching playback plan...", 0);
 
@@ -106,19 +110,29 @@
                 }
                 playbackStart = plan.chunks[0].start;
                 playbackEnd = plan.chunks[plan.chunks.length - 1].end;
-                playbackTime = playbackStart;
+                initialChunkIndex = findInitialChunkIndex(plan);
+                playbackTime = plan.chunks[initialChunkIndex].start;
 
-                // Load first chunk, then signal ready
-                loadChunk(0, function () {
+                // Load initial chunk (first with data when available), then signal ready.
+                loadChunk(initialChunkIndex, function () {
+                    // Render the initial playback frame immediately so aircraft are visible
+                    // even before the user presses play or touches the scrubber.
+                    updateVisibleAircraft();
+                    var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
+                    onPlaybackTimeChange(playbackTime, initialProgress);
+
                     emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
                     onReady({
                         density: plan.density,
                         suggestedMinAlt: plan.suggested_min_alt,
                         totalUniqueAircraft: plan.total_unique_aircraft || 0
                     });
-                    // Prefetch next chunk
-                    if (plan.chunks.length > 1) {
-                        loadChunk(1);
+                    // Prefetch neighboring chunks around the initial playback window.
+                    if (initialChunkIndex + 1 < plan.chunks.length) {
+                        loadChunk(initialChunkIndex + 1);
+                    }
+                    if (initialChunkIndex - 1 >= 0) {
+                        loadChunk(initialChunkIndex - 1);
                     }
                 });
             })
@@ -131,6 +145,20 @@
                 onPlaybackTimeChange(0, 0);
                 onReady({ error: true });
             });
+    }
+
+    function findInitialChunkIndex(playbackPlan) {
+        if (!playbackPlan || !playbackPlan.chunks || playbackPlan.chunks.length === 0) {
+            return 0;
+        }
+
+        // Start playback from the first chunk likely to contain tracks.
+        for (var i = 0; i < playbackPlan.chunks.length; i++) {
+            if ((playbackPlan.chunks[i].estimated_tracks || 0) > 0) {
+                return i;
+            }
+        }
+        return 0;
     }
 
     function loadChunk(index, callback) {
@@ -446,14 +474,20 @@
 
     function updateVisibleAircraft() {
         var visible = [];
+        var trails = [];
         var t = playbackTime;
 
         for (var i = 0; i < allTracks.length; i++) {
             var track = allTracks[i];
-            if (t < track.start_time || t > track.end_time) continue;
+            if (t < (track.start_time - VISIBILITY_LEAD_SECONDS)) continue;
+            if (t > (track.end_time + VISIBILITY_LINGER_SECONDS)) continue;
             if (altitudeFilter > 0 && (track.max_altitude || 0) < altitudeFilter) continue;
 
-            var pos = interpolatePosition(track, t);
+            var sampleTime = t;
+            if (sampleTime < track.start_time) sampleTime = track.start_time;
+            if (sampleTime > track.end_time) sampleTime = track.end_time;
+
+            var pos = interpolatePosition(track, sampleTime);
             if (pos) {
                 visible.push({
                     id: track.id,
@@ -466,6 +500,13 @@
                     heading: pos.heading,
                     avg_velocity: track.avg_velocity,
                     avg_heading: track.avg_heading
+                });
+
+                trails.push({
+                    id: track.id,
+                    icao24: track.icao24,
+                    selected: false,
+                    coordinates: polylineToCoords(track.polyline)
                 });
             }
         }
@@ -488,7 +529,16 @@
         var detailed = visible.slice(0, currentRenderBudget);
         var dots = visible.slice(currentRenderBudget);
 
-        onAircraftUpdate(detailed, dots, visible.length);
+        onAircraftUpdate(detailed, dots, visible.length, trails);
+    }
+
+    function polylineToCoords(polyline) {
+        if (!polyline || !polyline.length) return [];
+        var coords = [];
+        for (var i = 0; i < polyline.length; i++) {
+            coords.push([polyline[i][2], polyline[i][1]]);
+        }
+        return coords;
     }
 
     function interpolatePosition(track, t) {

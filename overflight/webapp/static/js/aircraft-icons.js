@@ -11,15 +11,7 @@
     var ICON_BASE = "/static/img/aircraft/";
 
     var CATEGORIES = {
-        widebody:   { icon: "widebody.svg",   size: 1.0,  label: "Wide-body" },
-        narrowbody: { icon: "narrowbody.svg", size: 0.75, label: "Narrow-body" },
-        regional:   { icon: "regional.svg",   size: 0.55, label: "Regional" },
-        turboprop:  { icon: "turboprop.svg",  size: 0.5,  label: "Turboprop" },
-        ga_single:  { icon: "ga_single.svg",  size: 0.4,  label: "General Aviation" },
-        ga_twin:    { icon: "ga_twin.svg",    size: 0.45, label: "GA Twin" },
-        helicopter: { icon: "helicopter.svg", size: 0.4,  label: "Helicopter" },
-        military:   { icon: "military.svg",   size: 0.7,  label: "Military" },
-        unknown:    { icon: "unknown.svg",    size: 0.5,  label: "Unknown" }
+        basic: { icon: "unknown.svg", size: 0.6, label: "Aircraft" }
     };
 
     // Model patterns for classification (checked in order)
@@ -52,30 +44,11 @@
      * @returns {{ path: string, size: number, category: string, label: string }}
      */
     function getAircraftIcon(data) {
-        var category = "unknown";
-
-        if (data) {
-            var model = (data.model || "") + " " + (data.manufacturer || "");
-
-            // Check model patterns
-            for (var i = 0; i < MODEL_PATTERNS.length; i++) {
-                if (MODEL_PATTERNS[i].pattern.test(model)) {
-                    category = MODEL_PATTERNS[i].category;
-                    break;
-                }
-            }
-
-            // If still unknown, check operator for military
-            if (category === "unknown" && data.operator && MILITARY_OPERATORS.test(data.operator)) {
-                category = "military";
-            }
-        }
-
-        var info = CATEGORIES[category];
+        var info = CATEGORIES.basic;
         return {
             path: ICON_BASE + info.icon,
             size: info.size,
-            category: category,
+            category: "basic",
             label: info.label
         };
     }

@@ -10,10 +10,15 @@ import logging
 import os
 import sqlite3
 
+import requests
+
 from overflight.config import ZIPCODE_DB_PATH
 from overflight.database.schema import init_zipcode_db
 
 logger = logging.getLogger(__name__)
+
+ZIP_REMOTE_FALLBACK_ENV = "OVERFLIGHT_ZIP_REMOTE_FALLBACK"
+ZIP_REMOTE_TIMEOUT_SECONDS = 6
 
 
 def load_zipcode_csv(csv_path, db_path=None):
@@ -111,14 +116,26 @@ def resolve_zipcode(zipcode, db_path=None):
         A dict with keys: zipcode, latitude, longitude, city, state.
         Returns None if the zip code is not found.
     """
+    using_default_db = db_path is None
     if db_path is None:
         db_path = ZIPCODE_DB_PATH
 
-    if not os.path.exists(db_path):
-        logger.error("Zip code database not found: %s", db_path)
-        return None
-
     zipcode = str(zipcode).strip().zfill(5)
+
+    # Remote fallback is enabled by default for app usage. It is intentionally
+    # disabled when callers pass an explicit db_path (tests and deterministic scripts).
+    allow_remote_fallback = (
+        using_default_db and os.environ.get(ZIP_REMOTE_FALLBACK_ENV, "1") != "0"
+    )
+
+    if not os.path.exists(db_path):
+        logger.warning("Zip code database not found: %s", db_path)
+        if allow_remote_fallback:
+            remote = _resolve_zipcode_remote(zipcode)
+            if remote:
+                _cache_zipcode_record(remote, db_path)
+            return remote
+        return None
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -132,4 +149,67 @@ def resolve_zipcode(zipcode, db_path=None):
 
     if row:
         return dict(row)
+
+    if allow_remote_fallback:
+        remote = _resolve_zipcode_remote(zipcode)
+        if remote:
+            _cache_zipcode_record(remote, db_path)
+        return remote
+
     return None
+
+
+def _resolve_zipcode_remote(zipcode):
+    """Resolve zipcode from a public API as a fallback when local data is absent."""
+    url = f"https://api.zippopotam.us/us/{zipcode}"
+    try:
+        response = requests.get(url, timeout=ZIP_REMOTE_TIMEOUT_SECONDS)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+
+        places = payload.get("places") or []
+        if not places:
+            return None
+
+        place = places[0]
+        lat = place.get("latitude")
+        lon = place.get("longitude")
+        if lat is None or lon is None:
+            return None
+
+        return {
+            "zipcode": str(payload.get("post code", zipcode)).zfill(5),
+            "latitude": float(lat),
+            "longitude": float(lon),
+            "city": place.get("place name"),
+            "state": place.get("state abbreviation") or place.get("state"),
+        }
+    except Exception:
+        logger.warning("Remote zip lookup failed for %s", zipcode, exc_info=True)
+        return None
+
+
+def _cache_zipcode_record(record, db_path):
+    """Store a remotely resolved zipcode locally to reduce repeated network lookups."""
+    try:
+        conn = init_zipcode_db(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO zipcodes (zipcode, latitude, longitude, city, state)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                record["zipcode"],
+                record["latitude"],
+                record["longitude"],
+                record.get("city"),
+                record.get("state"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.warning("Failed caching zipcode %s", record.get("zipcode"), exc_info=True)

@@ -181,6 +181,12 @@
             data: emptyFeatureCollection()
         });
 
+        // GeoJSON source for active aircraft trails in the current playback window.
+        map.addSource("active-trails", {
+            type: "geojson",
+            data: emptyFeatureCollection()
+        });
+
         // GeoJSON source for search radius circle
         map.addSource("search-radius", {
             type: "geojson",
@@ -222,6 +228,17 @@
             }
         });
 
+        map.addLayer({
+            id: "active-trails-line",
+            type: "line",
+            source: "active-trails",
+            paint: {
+                "line-color": "#1f7ae0",
+                "line-width": 1.2,
+                "line-opacity": 0.22
+            }
+        });
+
         // Overflow dots layer
         map.addLayer({
             id: "aircraft-dots-layer",
@@ -241,52 +258,26 @@
             }
         });
 
-        // Detailed aircraft - rendered as circles with callsign labels
-        // (We use circle + symbol layers since custom SVG images require async loading)
+        // Detailed aircraft - rendered as a single basic airplane icon for all types.
         map.addLayer({
             id: "aircraft-icons-layer",
-            type: "circle",
-            source: "aircraft-detailed",
-            minzoom: 9,
-            paint: {
-                "circle-radius": [
-                    "interpolate", ["linear"], ["get", "sizeMult"],
-                    0.3, 5,
-                    0.5, 7,
-                    0.75, 9,
-                    1.0, 11
-                ],
-                "circle-color": [
-                    "case",
-                    ["==", ["get", "selected"], true], "#e8391a",
-                    ["==", ["get", "phase"], "ground"], "#9E9E9E",
-                    ["<", ["get", "altitude"], 3000], "#4CAF50",
-                    ["<", ["get", "altitude"], 10000], "#FF9800",
-                    "#2196F3"
-                ],
-                "circle-opacity": 0.9,
-                "circle-stroke-width": [
-                    "case",
-                    ["==", ["get", "selected"], true], 3,
-                    1.5
-                ],
-                "circle-stroke-color": [
-                    "case",
-                    ["==", ["get", "selected"], true], "#fff",
-                    "rgba(255,255,255,0.8)"
-                ]
-            }
-        });
-
-        // Heading indicator - a small triangle showing direction
-        map.addLayer({
-            id: "aircraft-heading-layer",
             type: "symbol",
             source: "aircraft-detailed",
             minzoom: 9,
             layout: {
-                "icon-image": "heading-arrow",
-                "icon-size": 0.5,
+                "icon-image": [
+                    "case",
+                    ["==", ["get", "selected"], true],
+                    "aircraft-basic-selected",
+                    "aircraft-basic"
+                ],
+                "icon-size": [
+                    "interpolate", ["linear"], ["get", "sizeMult"],
+                    0.3, 0.28,
+                    0.5, 0.34,
+                    0.75, 0.42,
+                    1.0, 0.52
+                ],
                 "icon-rotate": ["get", "heading"],
                 "icon-rotation-alignment": "map",
                 "icon-allow-overlap": true,
@@ -316,8 +307,8 @@
             }
         });
 
-        // Create heading arrow image
-        createHeadingArrowImage();
+        // Register the simple airplane icon used for all aircraft categories.
+        createAircraftMarkerImages();
 
         // Click handler for detailed aircraft
         map.on("click", "aircraft-icons-layer", function (e) {
@@ -335,28 +326,55 @@
         });
     }
 
-    function createHeadingArrowImage() {
-        // Create a small triangle arrow image for heading indication
-        var size = 32;
+    function createAircraftMarkerImages() {
+        addAircraftMarkerImage("aircraft-basic", "#1f7ae0", "#0e3a6d");
+        addAircraftMarkerImage("aircraft-basic-selected", "#e8391a", "#ffffff");
+    }
+
+    function addAircraftMarkerImage(name, fillColor, strokeColor) {
+        var size = 48;
         var canvas = document.createElement("canvas");
         canvas.width = size;
         canvas.height = size;
         var ctx = canvas.getContext("2d");
 
-        // Draw a small upward-pointing triangle
-        ctx.beginPath();
-        ctx.moveTo(size / 2, 2);
-        ctx.lineTo(size / 2 + 6, size / 2 + 4);
-        ctx.lineTo(size / 2 - 6, size / 2 + 4);
-        ctx.closePath();
-        ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fill();
+        var cx = size / 2;
+        var cy = size / 2;
+        ctx.translate(cx, cy);
 
-        map.addImage("heading-arrow", {
-            width: size,
-            height: size,
-            data: ctx.getImageData(0, 0, size, size).data
-        });
+        // Simple airplane silhouette pointing up.
+        ctx.beginPath();
+        ctx.moveTo(0, -18);      // nose
+        ctx.lineTo(3, -7);       // upper fuselage right
+        ctx.lineTo(11, -5);      // right wing tip
+        ctx.lineTo(10, -1);      // right wing trailing edge
+        ctx.lineTo(3, -1);       // fuselage right
+        ctx.lineTo(3, 10);       // right tail root
+        ctx.lineTo(7, 13);       // right tail tip
+        ctx.lineTo(6, 16);       // right tail lower
+        ctx.lineTo(0, 13);       // tail center
+        ctx.lineTo(-6, 16);      // left tail lower
+        ctx.lineTo(-7, 13);      // left tail tip
+        ctx.lineTo(-3, 10);      // left tail root
+        ctx.lineTo(-3, -1);      // fuselage left
+        ctx.lineTo(-10, -1);     // left wing trailing edge
+        ctx.lineTo(-11, -5);     // left wing tip
+        ctx.lineTo(-3, -7);      // upper fuselage left
+        ctx.closePath();
+
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = strokeColor;
+        ctx.stroke();
+
+        if (!map.hasImage(name)) {
+            map.addImage(name, {
+                width: size,
+                height: size,
+                data: ctx.getImageData(0, 0, size, size).data
+            });
+        }
     }
 
     function emptyFeatureCollection() {
@@ -393,7 +411,7 @@
 
     // --- Aircraft Rendering ---
 
-    function updateAircraftOnMap(detailed, dots, totalCount) {
+    function updateAircraftOnMap(detailed, dots, totalCount, trails) {
         if (!map || !mapInitialized) return;
 
         var zoom = map.getZoom();
@@ -451,6 +469,27 @@
         map.getSource("aircraft-dots").setData({
             type: "FeatureCollection",
             features: dotFeatures
+        });
+
+        var trailFeatures = (trails || []).map(function (tr) {
+            return {
+                type: "Feature",
+                geometry: {
+                    type: "LineString",
+                    coordinates: tr.coordinates || []
+                },
+                properties: {
+                    id: tr.id,
+                    icao24: tr.icao24
+                }
+            };
+        }).filter(function (f) {
+            return f.geometry.coordinates.length >= 2;
+        });
+
+        map.getSource("active-trails").setData({
+            type: "FeatureCollection",
+            features: trailFeatures
         });
 
         // Update counter
@@ -528,8 +567,8 @@
         if (mapWarning) mapWarning.style.display = "none";
 
         window.OverflightPlayback.init(searchLat, searchLon, searchRadius, {
-            onAircraftUpdate: function (detailed, dots, totalCount) {
-                updateAircraftOnMap(detailed, dots, totalCount);
+            onAircraftUpdate: function (detailed, dots, totalCount, trails) {
+                updateAircraftOnMap(detailed, dots, totalCount, trails);
             },
             onPlaybackTimeChange: function (t, progress) {
                 updateTimeDisplay(t, progress);
@@ -569,6 +608,11 @@
                 applySuggestedAltitude(state);
                 mapLoading.style.display = "none";
                 playbackControls.style.display = "flex";
+
+                // Start playback automatically so aircraft motion is visible
+                // without requiring an extra click after switching to map view.
+                window.OverflightPlayback.play();
+                playPauseBtn.innerHTML = "&#9646;&#9646;";
             }
         });
     }
