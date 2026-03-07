@@ -19,7 +19,11 @@ from overflight.config import (
     CHUNK_SIZE_MEDIUM_DENSITY_HOURS,
     DEFAULT_RADIUS_MILES,
     MAX_RADIUS_MILES,
+    PLAYBACK_CHUNK_BACKOFF_MS,
+    PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS,
+    PLAYBACK_CHUNK_RETRY_MAX,
     PLAYBACK_SPEED_RATIO,
+    PLAYBACK_TARGET_FPS,
     RENDER_BUDGET_MAX,
     RETENTION_HOURS,
 )
@@ -60,8 +64,18 @@ def index():
         config={
             "PLAYBACK_SPEED_RATIO": PLAYBACK_SPEED_RATIO,
             "RENDER_BUDGET_MAX": RENDER_BUDGET_MAX,
+            "PLAYBACK_TARGET_FPS": PLAYBACK_TARGET_FPS,
+            "PLAYBACK_CHUNK_RETRY_MAX": PLAYBACK_CHUNK_RETRY_MAX,
+            "PLAYBACK_CHUNK_BACKOFF_MS": PLAYBACK_CHUNK_BACKOFF_MS,
+            "PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS": PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS,
         },
     )
+
+
+@bp.route("/dev/playback-harness")
+def playback_harness():
+    """Render a lightweight manual harness for playback state testing."""
+    return render_template("playback_harness.html")
 
 
 @bp.route("/api/flights")

@@ -110,6 +110,8 @@
                     <span id="aircraft-counter-text"></span>
                 </div>
 
+                <div id="map-warning" class="map-warning" style="display:none;"></div>
+
                 <!-- Playback controls -->
                 <div id="playback-controls" class="playback-controls" style="display:none;">
                     <button id="playback-play-pause" class="playback-btn" title="Play/Pause">&#9654;</button>
@@ -118,6 +120,7 @@
                         <span id="playback-time-label" class="playback-time-label">--:--</span>
                     </div>
                     <div class="playback-settings">
+                        <button id="playback-settings-toggle" class="playback-settings-toggle" title="Playback settings">&#9881;</button>
                         <select id="playback-speed" class="playback-speed" title="Playback speed">
                             <option value="0.5">0.5x</option>
                             <option value="1" selected>1x</option>
@@ -135,6 +138,7 @@
 
             <!-- Detail sidebar -->
             <div id="detail-sidebar" class="detail-sidebar" style="display:none;">
+                <div id="detail-drag-handle" class="detail-drag-handle" aria-hidden="true"></div>
                 <button id="detail-close" class="detail-close">&times;</button>
                 <div id="detail-content" class="detail-content">
                     <!-- Populated by JS when aircraft clicked -->
@@ -179,6 +183,10 @@
             maxRadius: {{ max_radius }},
             playbackSpeedRatio: {{ config.PLAYBACK_SPEED_RATIO }},
             renderBudgetMax: {{ config.RENDER_BUDGET_MAX }},
+            playbackTargetFps: {{ config.PLAYBACK_TARGET_FPS }},
+            chunkFetchRetryMax: {{ config.PLAYBACK_CHUNK_RETRY_MAX }},
+            chunkFetchBackoffMs: {{ config.PLAYBACK_CHUNK_BACKOFF_MS }},
+            chunkFailureCooldownMs: {{ config.PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS }},
         };
     </script>
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>

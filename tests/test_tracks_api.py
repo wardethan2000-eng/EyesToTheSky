@@ -11,6 +11,7 @@ from unittest.mock import patch
 from overflight.database.schema import init_enrichment_db, init_flight_db, init_tracks_db, init_zipcode_db
 from overflight.database.tracks import build_tracks
 from overflight.ingestion.poller import insert_state_vectors
+from overflight.webapp.routes import _chunk_seconds_for_density, _classify_density
 
 
 class TracksAPITestCase(unittest.TestCase):
@@ -348,6 +349,22 @@ class TestAdaptiveChunkSizing(TracksAPITestCase):
             chunk = data["chunks"][0]
             chunk_duration = chunk["end"] - chunk["start"]
             self.assertEqual(chunk_duration, 4 * 3600)
+
+
+class TestTracksPlanHelpers(unittest.TestCase):
+    """Unit tests for density thresholds and chunk sizing helpers."""
+
+    def test_density_thresholds(self):
+        self.assertEqual(_classify_density(0), ("low", None))
+        self.assertEqual(_classify_density(200), ("low", None))
+        self.assertEqual(_classify_density(201), ("medium", 1000))
+        self.assertEqual(_classify_density(500), ("medium", 1000))
+        self.assertEqual(_classify_density(501), ("high", 5000))
+
+    def test_chunk_seconds_for_density(self):
+        self.assertEqual(_chunk_seconds_for_density("low"), 4 * 3600)
+        self.assertEqual(_chunk_seconds_for_density("medium"), 1 * 3600)
+        self.assertEqual(_chunk_seconds_for_density("high"), 30 * 60)
 
 
 if __name__ == "__main__":

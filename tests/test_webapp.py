@@ -107,6 +107,25 @@ class TestIndexPage(WebAppTestCase):
         self.assertIn("radius-select", html)
         self.assertIn("Use My Location", html)
 
+    def test_index_contains_playback_tuning_config(self):
+        resp = self.client.get("/")
+        html = resp.data.decode()
+        self.assertIn("playbackTargetFps", html)
+        self.assertIn("chunkFetchRetryMax", html)
+        self.assertIn("chunkFetchBackoffMs", html)
+        self.assertIn("chunkFailureCooldownMs", html)
+
+
+class TestDevHarness(WebAppTestCase):
+    """Test developer playback harness route."""
+
+    def test_playback_harness_route(self):
+        resp = self.client.get("/dev/playback-harness")
+        self.assertEqual(resp.status_code, 200)
+        html = resp.data.decode()
+        self.assertIn("Playback State Harness", html)
+        self.assertIn("btn-retry-success", html)
+
 
 class TestFlightsAPI(WebAppTestCase):
     """Test the /api/flights endpoint."""

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OverFlight Playback Harness</title>
+    <style>
+        body { font-family: "Segoe UI", Arial, sans-serif; margin: 1rem; background: #f7f9fb; color: #1f2937; }
+        h1 { font-size: 1.35rem; margin-bottom: 0.5rem; }
+        p { margin-bottom: 0.75rem; }
+        .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+        button { border: 1px solid #cbd5e1; background: #fff; padding: 0.45rem 0.7rem; border-radius: 6px; cursor: pointer; }
+        button:hover { border-color: #3b82f6; color: #2563eb; }
+        .status { background: #fff; border: 1px solid #dbe4ef; padding: 0.65rem; border-radius: 8px; margin-bottom: 0.75rem; }
+        .log { background: #111827; color: #d1fae5; padding: 0.75rem; border-radius: 8px; min-height: 220px; overflow: auto; font-family: Consolas, monospace; font-size: 0.82rem; }
+        .ok { color: #16a34a; }
+        .warn { color: #f59e0b; }
+        .err { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <h1>Playback State Harness</h1>
+    <p>Manual harness for Phase 5 playback state checks. Use it to validate empty/error/retry behavior without map dependencies.</p>
+
+    <div class="status" id="status">Status: idle</div>
+
+    <div class="row">
+        <button id="btn-empty">Run Empty Scenario</button>
+        <button id="btn-plan-error">Run Plan Error</button>
+        <button id="btn-retry-success">Run Retry Then Success</button>
+        <button id="btn-retry-fail">Run Retry Then Fail</button>
+        <button id="btn-clear">Clear Log</button>
+    </div>
+
+    <div class="log" id="log"></div>
+
+    <script>
+        window.OVERFLIGHT = {
+            playbackSpeedRatio: 960,
+            renderBudgetMax: 150,
+            playbackTargetFps: 30,
+            chunkFetchRetryMax: 3,
+            chunkFetchBackoffMs: 10,
+            chunkFailureCooldownMs: 100,
+        };
+    </script>
+    <script src="/static/js/playback.js"></script>
+    <script src="/static/js/playback-harness.js"></script>
+</body>
+</html>

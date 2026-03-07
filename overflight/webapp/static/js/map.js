@@ -20,10 +20,11 @@
 
     // DOM references (resolved on init)
     var mapSection, mapEl, mapLoading, mapLoadingText;
+    var mapWarning;
     var aircraftCounter, aircraftCounterText;
     var playbackControls, playPauseBtn, scrubber, timeLabel;
-    var speedSelect, altitudeSelect;
-    var detailSidebar, detailClose, detailContent;
+    var speedSelect, altitudeSelect, settingsToggle;
+    var detailSidebar, detailClose, detailContent, detailDragHandle;
     var viewToggle, btnCardView, btnMapView;
     var resultsSection, flightList;
 
@@ -40,6 +41,7 @@
         mapEl = document.getElementById("map");
         mapLoading = document.getElementById("map-loading");
         mapLoadingText = document.getElementById("map-loading-text");
+        mapWarning = document.getElementById("map-warning");
         aircraftCounter = document.getElementById("aircraft-counter");
         aircraftCounterText = document.getElementById("aircraft-counter-text");
         playbackControls = document.getElementById("playback-controls");
@@ -48,9 +50,11 @@
         timeLabel = document.getElementById("playback-time-label");
         speedSelect = document.getElementById("playback-speed");
         altitudeSelect = document.getElementById("altitude-filter");
+        settingsToggle = document.getElementById("playback-settings-toggle");
         detailSidebar = document.getElementById("detail-sidebar");
         detailClose = document.getElementById("detail-close");
         detailContent = document.getElementById("detail-content");
+        detailDragHandle = document.getElementById("detail-drag-handle");
         viewToggle = document.getElementById("view-toggle");
         btnCardView = document.getElementById("btn-card-view");
         btnMapView = document.getElementById("btn-map-view");
@@ -88,6 +92,7 @@
         if (btnMapView) btnMapView.classList.remove("active");
         if (flightList) flightList.style.display = "";
         if (mapSection) mapSection.style.display = "none";
+        if (mapWarning) mapWarning.style.display = "none";
         hideDetailSidebar();
     }
 
@@ -242,6 +247,7 @@
             id: "aircraft-icons-layer",
             type: "circle",
             source: "aircraft-detailed",
+            minzoom: 9,
             paint: {
                 "circle-radius": [
                     "interpolate", ["linear"], ["get", "sizeMult"],
@@ -277,6 +283,7 @@
             id: "aircraft-heading-layer",
             type: "symbol",
             source: "aircraft-detailed",
+            minzoom: 9,
             layout: {
                 "icon-image": "heading-arrow",
                 "icon-size": 0.5,
@@ -292,7 +299,7 @@
             id: "aircraft-labels-layer",
             type: "symbol",
             source: "aircraft-detailed",
-            minzoom: 9,
+            minzoom: 12,
             layout: {
                 "text-field": ["get", "callsign"],
                 "text-font": ["Open Sans Regular"],
@@ -389,6 +396,12 @@
     function updateAircraftOnMap(detailed, dots, totalCount) {
         if (!map || !mapInitialized) return;
 
+        var zoom = map.getZoom();
+        if (zoom < 9) {
+            dots = detailed.concat(dots);
+            detailed = [];
+        }
+
         // Build GeoJSON for detailed aircraft
         var detailedFeatures = detailed.map(function (ac) {
             var iconInfo = window.OverflightIcons.getAircraftIcon({
@@ -445,7 +458,7 @@
             aircraftCounter.style.display = "block";
             var msg = totalCount + " aircraft";
             if (dots.length > 0) {
-                msg = "Showing " + detailed.length + " of " + totalCount + " aircraft";
+                msg = "Showing " + detailed.length + " of " + totalCount + " aircraft. Zoom in or increase altitude filter to see details.";
             }
             aircraftCounterText.textContent = msg;
         } else {
@@ -472,7 +485,27 @@
 
         altitudeSelect.onchange = function () {
             window.OverflightPlayback.setAltitudeFilter(parseFloat(altitudeSelect.value));
+            startPlayback();
         };
+
+        if (settingsToggle) {
+            settingsToggle.onclick = function () {
+                playbackControls.classList.toggle("show-settings");
+            };
+        }
+
+        [playbackControls, scrubber, speedSelect, altitudeSelect].forEach(function (el) {
+            if (!el) return;
+            el.addEventListener("wheel", function (evt) {
+                evt.stopPropagation();
+            }, { passive: true });
+            el.addEventListener("touchstart", function (evt) {
+                evt.stopPropagation();
+            }, { passive: true });
+            el.addEventListener("touchmove", function (evt) {
+                evt.stopPropagation();
+            }, { passive: true });
+        });
     }
 
     function updateTimeDisplay(playbackTime, progress) {
@@ -492,6 +525,7 @@
 
     function startPlayback() {
         mapLoading.style.display = "flex";
+        if (mapWarning) mapWarning.style.display = "none";
 
         window.OverflightPlayback.init(searchLat, searchLon, searchRadius, {
             onAircraftUpdate: function (detailed, dots, totalCount) {
@@ -500,24 +534,65 @@
             onPlaybackTimeChange: function (t, progress) {
                 updateTimeDisplay(t, progress);
             },
-            onLoadingProgress: function (message) {
-                mapLoadingText.textContent = message;
+            onLoadingProgress: function (status) {
+                if (typeof status === "string") {
+                    mapLoadingText.textContent = status;
+                    return;
+                }
+
+                if (status && status.message) {
+                    if (status.percent != null) {
+                        mapLoadingText.textContent = status.message + " " + status.percent + "%";
+                    } else {
+                        mapLoadingText.textContent = status.message;
+                    }
+                }
+
+                if (status && status.warning) {
+                    showMapWarning(status.message || "Playback data is temporarily unavailable.");
+                }
             },
             onReady: function (state) {
                 if (state && (state.empty || state.error)) {
                     playbackControls.style.display = "none";
                     mapLoading.style.display = "flex";
-                    if (state.empty) {
+                    if (state.empty && state.collecting) {
+                        mapLoadingText.textContent = "Collecting flight data - check back in a few minutes.";
+                    } else if (state.empty) {
                         mapLoadingText.textContent = "No aircraft data available for this area yet.";
                     } else {
                         mapLoadingText.textContent = "Unable to load playback data. Please try again.";
                     }
                     return;
                 }
+
+                applySuggestedAltitude(state);
                 mapLoading.style.display = "none";
                 playbackControls.style.display = "flex";
             }
         });
+    }
+
+    function applySuggestedAltitude(state) {
+        if (!state || !state.suggestedMinAlt || !altitudeSelect) return;
+
+        var suggested = String(state.suggestedMinAlt);
+        for (var i = 0; i < altitudeSelect.options.length; i++) {
+            var opt = altitudeSelect.options[i];
+            opt.text = opt.text.replace(" (suggested)", "");
+            if (opt.value === suggested) {
+                opt.text += " (suggested)";
+            }
+        }
+    }
+
+    function showMapWarning(message) {
+        if (!mapWarning) return;
+        mapWarning.textContent = message;
+        mapWarning.style.display = "block";
+        window.setTimeout(function () {
+            if (mapWarning) mapWarning.style.display = "none";
+        }, 6000);
     }
 
     // --- Aircraft Click / Detail Sidebar ---
@@ -535,6 +610,9 @@
         detailContent.innerHTML =
             '<div class="detail-loading"><div class="spinner"></div><p>Loading details\u2026</p></div>';
         detailSidebar.style.display = "block";
+        detailSidebar.classList.add("is-open");
+        detailSidebar.classList.add("is-peek");
+        initDetailSidebarDrag();
 
         // Fetch detail
         fetch("/api/track-detail/" + encodeURIComponent(icao24))
@@ -607,6 +685,12 @@
 
     function hideDetailSidebar() {
         if (detailSidebar) detailSidebar.style.display = "none";
+        if (detailSidebar) {
+            detailSidebar.classList.remove("is-open");
+            detailSidebar.classList.remove("is-peek");
+            detailSidebar.classList.remove("is-full");
+            detailSidebar.style.height = "";
+        }
         selectedAircraft = null;
 
         // Clear track line
@@ -629,6 +713,67 @@
 
     function formatNumber(n) {
         return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+
+    function isMobileViewport() {
+        return window.matchMedia("(max-width: 599px)").matches;
+    }
+
+    function initDetailSidebarDrag() {
+        if (!detailSidebar || !detailDragHandle || !isMobileViewport()) return;
+        if (detailSidebar._dragBound) return;
+        detailSidebar._dragBound = true;
+
+        var dragState = {
+            dragging: false,
+            startY: 0,
+            startHeight: 0
+        };
+
+        function getHeightFromClass() {
+            return detailSidebar.classList.contains("is-full")
+                ? Math.round(window.innerHeight * 0.85)
+                : Math.round(window.innerHeight * 0.35);
+        }
+
+        function clampHeight(h) {
+            var minHeight = Math.round(window.innerHeight * 0.25);
+            var maxHeight = Math.round(window.innerHeight * 0.85);
+            return Math.max(minHeight, Math.min(maxHeight, h));
+        }
+
+        function pointerMove(evt) {
+            if (!dragState.dragging) return;
+            var delta = dragState.startY - evt.clientY;
+            var nextHeight = clampHeight(dragState.startHeight + delta);
+            detailSidebar.style.height = nextHeight + "px";
+        }
+
+        function pointerUp() {
+            if (!dragState.dragging) return;
+            dragState.dragging = false;
+
+            var currentHeight = parseFloat(detailSidebar.style.height || "0") || getHeightFromClass();
+            var threshold = Math.round(window.innerHeight * 0.6);
+            if (currentHeight >= threshold) {
+                detailSidebar.classList.remove("is-peek");
+                detailSidebar.classList.add("is-full");
+                detailSidebar.style.height = Math.round(window.innerHeight * 0.85) + "px";
+            } else {
+                detailSidebar.classList.remove("is-full");
+                detailSidebar.classList.add("is-peek");
+                detailSidebar.style.height = Math.round(window.innerHeight * 0.35) + "px";
+            }
+        }
+
+        detailDragHandle.addEventListener("pointerdown", function (evt) {
+            dragState.dragging = true;
+            dragState.startY = evt.clientY;
+            dragState.startHeight = parseFloat(detailSidebar.style.height || "0") || getHeightFromClass();
+        });
+
+        window.addEventListener("pointermove", pointerMove);
+        window.addEventListener("pointerup", pointerUp);
     }
 
     // Expose globally for app.js integration

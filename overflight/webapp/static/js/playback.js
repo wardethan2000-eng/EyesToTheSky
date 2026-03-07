@@ -13,9 +13,12 @@
 
     var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 960;
     var RENDER_BUDGET = window.OVERFLIGHT.renderBudgetMax || 150;
-    var TARGET_FPS = 30;
+    var TARGET_FPS = window.OVERFLIGHT.playbackTargetFps || 30;
     var DEPARTURE_ANIMATION_SECONDS = 30;
     var DEPARTURE_BLEND_SECONDS = 8;
+    var CHUNK_FETCH_RETRY_MAX = window.OVERFLIGHT.chunkFetchRetryMax || 3;
+    var CHUNK_FETCH_BACKOFF_MS = window.OVERFLIGHT.chunkFetchBackoffMs || 700;
+    var CHUNK_FAILURE_COOLDOWN_MS = window.OVERFLIGHT.chunkFailureCooldownMs || 15000;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
@@ -33,6 +36,7 @@
     var altitudeFilter = 0;
     var currentChunkIndex = -1;
     var lastRenderTime = 0;
+    var failedChunkCooldown = {};
 
     // Callbacks set by map.js
     var onAircraftUpdate = null;  // fn(visibleAircraft: Array)
@@ -71,7 +75,7 @@
         currentChunkIndex = -1;
         lastRenderTime = 0;
 
-        onLoadingProgress("Fetching playback plan\u2026");
+        emitLoadingProgress("Fetching playback plan...", 0);
 
         var url = "/api/tracks/plan?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
         if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
@@ -83,11 +87,21 @@
             })
             .then(function (data) {
                 plan = data;
-                if (!plan.chunks || plan.chunks.length === 0) {
-                    onLoadingProgress("No aircraft data available for this area.");
+                if (!plan.chunks || plan.chunks.length === 0 || (plan.total_unique_aircraft || 0) <= 0) {
+                    onLoadingProgress({
+                        message: "Collecting flight data - check back in a few minutes.",
+                        percent: 100,
+                        collecting: true
+                    });
                     onAircraftUpdate([], [], 0);
                     onPlaybackTimeChange(0, 0);
-                    onReady({ empty: true });
+                    onReady({
+                        empty: true,
+                        collecting: true,
+                        density: plan.density,
+                        suggestedMinAlt: plan.suggested_min_alt,
+                        totalUniqueAircraft: plan.total_unique_aircraft || 0
+                    });
                     return;
                 }
                 playbackStart = plan.chunks[0].start;
@@ -96,8 +110,12 @@
 
                 // Load first chunk, then signal ready
                 loadChunk(0, function () {
-                    onLoadingProgress("Ready \u2014 " + plan.total_unique_aircraft + " aircraft");
-                    onReady();
+                    emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
+                    onReady({
+                        density: plan.density,
+                        suggestedMinAlt: plan.suggested_min_alt,
+                        totalUniqueAircraft: plan.total_unique_aircraft || 0
+                    });
                     // Prefetch next chunk
                     if (plan.chunks.length > 1) {
                         loadChunk(1);
@@ -105,7 +123,10 @@
                 });
             })
             .catch(function () {
-                onLoadingProgress("Failed to load playback data.");
+                onLoadingProgress({
+                    message: "Failed to load playback data.",
+                    warning: true
+                });
                 onAircraftUpdate([], [], 0);
                 onPlaybackTimeChange(0, 0);
                 onReady({ error: true });
@@ -126,6 +147,11 @@
             return;
         }
 
+        if (failedChunkCooldown[index] && Date.now() < failedChunkCooldown[index]) {
+            if (callback) callback();
+            return;
+        }
+
         pendingChunkLoads[index] = callback ? [callback] : [];
 
         var chunk = plan.chunks[index];
@@ -134,8 +160,15 @@
             "&start=" + chunk.start + "&end=" + chunk.end;
         if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
 
-        onLoadingProgress("Loading chunk " + (index + 1) + " of " + plan.chunk_count + "\u2026");
+        emitLoadingProgress(
+            "Loading aircraft data...",
+            estimateProgressPercent(index, false)
+        );
 
+        fetchChunkWithRetry(index, url, 1);
+    }
+
+    function fetchChunkWithRetry(index, url, attempt) {
         fetch(url)
             .then(function (resp) {
                 if (!resp.ok) throw new Error("Chunk fetch failed");
@@ -150,12 +183,51 @@
                     }
                     t._interpIndex = 0;
                 });
+                delete failedChunkCooldown[index];
                 rebuildTrackCache();
+                emitLoadingProgress(
+                    "Loading aircraft data...",
+                    estimateProgressPercent(index, true)
+                );
                 flushPendingCallbacks(index);
             })
             .catch(function () {
+                if (attempt < CHUNK_FETCH_RETRY_MAX) {
+                    var delay = CHUNK_FETCH_BACKOFF_MS * Math.pow(2, attempt - 1);
+                    setTimeout(function () {
+                        fetchChunkWithRetry(index, url, attempt + 1);
+                    }, delay);
+                    return;
+                }
+
+                failedChunkCooldown[index] = Date.now() + CHUNK_FAILURE_COOLDOWN_MS;
+                onLoadingProgress({
+                    message: "Some playback data failed to load. Retrying in a few seconds.",
+                    warning: true
+                });
                 flushPendingCallbacks(index);
             });
+    }
+
+    function estimateProgressPercent(chunkIndex, includeCurrent) {
+        if (!plan || !plan.chunk_count) return 0;
+
+        var loaded = Object.keys(chunkBuffer).length;
+        if (includeCurrent && !chunkBuffer[chunkIndex]) {
+            loaded += 1;
+        }
+
+        var percent = Math.round((loaded / plan.chunk_count) * 100);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        return percent;
+    }
+
+    function emitLoadingProgress(message, percent) {
+        onLoadingProgress({
+            message: message,
+            percent: percent
+        });
     }
 
     function flushPendingCallbacks(index) {
