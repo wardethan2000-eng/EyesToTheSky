@@ -28,8 +28,8 @@
     const noResults = document.getElementById("no-results");
 
     // --- State ---
-    let currentLat = window.OVERFLIGHT.savedLat;
-    let currentLon = window.OVERFLIGHT.savedLon;
+    let currentLat = parseCoord(window.OVERFLIGHT.savedLat);
+    let currentLon = parseCoord(window.OVERFLIGHT.savedLon);
 
     // --- Init ---
     function init() {
@@ -44,15 +44,23 @@
             }
         });
 
+        if (window.OverflightMap && typeof window.OverflightMap.initOverview === "function") {
+            window.OverflightMap.initOverview({
+                lat: currentLat,
+                lon: currentLon,
+                radius: parseFloat(radiusSelect.value)
+            });
+        }
+
         // Auto-search if we have saved coordinates
         if (currentLat && currentLon) {
             showLocationInfo();
             fetchFlights(currentLat, currentLon);
         }
 
-        // Try geolocation automatically on first visit (no saved location)
-        if (!currentLat && !currentLon && navigator.geolocation) {
-            attemptAutoGeo();
+        // Auto-geolocate only when browser has already granted location permission.
+        if (currentLat == null && currentLon == null) {
+            attemptAutoGeoWhenGranted();
         }
     }
 
@@ -72,20 +80,74 @@
         );
     }
 
-    function onGeoClick() {
-        if (!navigator.geolocation) {
-            showError("Geolocation is not supported by your browser. Please enter a zip code.");
+    function attemptAutoGeoWhenGranted() {
+        if (!navigator.geolocation) return;
+
+        // Browser support for Permissions API varies; fall back to silent attempt when unavailable.
+        if (!navigator.permissions || !navigator.permissions.query) {
+            attemptAutoGeo();
             return;
         }
 
-        geoBtn.disabled = true;
-        geoBtn.textContent = "Locating…";
-        hideError();
+        navigator.permissions.query({ name: "geolocation" })
+            .then(function (result) {
+                if (result.state === "granted") {
+                    attemptAutoGeo();
+                }
+            })
+            .catch(function () {
+                // If permissions API fails unexpectedly, keep startup resilient.
+            });
+    }
+
+    function hasSecureGeolocationContext() {
+        if (window.isSecureContext) return true;
+
+        // Localhost origins are treated as secure for geolocation in modern browsers.
+        var host = window.location && window.location.hostname ? window.location.hostname : "";
+        return host === "localhost" || host === "127.0.0.1";
+    }
+
+    function requestUserLocation(onSuccess, onError) {
+        if (!navigator.geolocation) {
+            onError({
+                message: "Geolocation is not available in this browser.",
+                isPermission: false
+            });
+            return;
+        }
+
+        if (!hasSecureGeolocationContext()) {
+            onError({
+                message: "Location needs a secure context (HTTPS or localhost). Open the app on localhost or enable HTTPS.",
+                isPermission: false
+            });
+            return;
+        }
 
         navigator.geolocation.getCurrentPosition(
             function (pos) {
+                onSuccess(pos);
+            },
+            function (err) {
+                onError({
+                    message: err && err.message ? err.message : "Could not determine your location.",
+                    isPermission: !!(err && err.code === err.PERMISSION_DENIED)
+                });
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
+    }
+
+    function onGeoClick() {
+        geoBtn.disabled = true;
+        geoBtn.textContent = "Locating...";
+        hideError();
+
+        requestUserLocation(
+            function (pos) {
                 geoBtn.disabled = false;
-                geoBtn.textContent = "📍 Use My Location";
+                geoBtn.textContent = "Use My Location";
                 currentLat = pos.coords.latitude;
                 currentLon = pos.coords.longitude;
                 zipcodeInput.value = "";
@@ -94,14 +156,13 @@
             },
             function (err) {
                 geoBtn.disabled = false;
-                geoBtn.textContent = "📍 Use My Location";
-                if (err.code === err.PERMISSION_DENIED) {
-                    showError("Location access denied. Please enter a zip code instead.");
+                geoBtn.textContent = "Use My Location";
+                if (err.isPermission) {
+                    showError("Location access was blocked. Allow location in browser site settings, then try again.");
                 } else {
-                    showError("Could not determine your location. Please enter a zip code.");
+                    showError(err.message || "Could not determine your location. Please enter a zip code.");
                 }
-            },
-            { timeout: 10000, maximumAge: 60000 }
+            }
         );
     }
 
@@ -188,10 +249,9 @@
 
         resultsSection.style.display = "block";
 
-        // Notify map module that search is complete (enables view toggle)
+        // Notify map module that search is complete so it can center and render this area.
         if (window.OverflightMap) {
             window.OverflightMap.onSearchComplete(currentLat, currentLon, radius);
-            window.OverflightMap.showCardView();
         }
     }
 
@@ -265,9 +325,9 @@
     // --- UI Helpers ---
     function showLocationInfo(label) {
         if (label) {
-            locationText.textContent = "📍 " + label;
+            locationText.textContent = "Location: " + label;
         } else if (currentLat && currentLon) {
-            locationText.textContent = "📍 " + currentLat.toFixed(4) + ", " + currentLon.toFixed(4);
+            locationText.textContent = "Location: " + currentLat.toFixed(4) + ", " + currentLon.toFixed(4);
         }
         locationInfo.style.display = "block";
     }
@@ -317,6 +377,12 @@
 
     function formatNumber(n) {
         return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+
+    function parseCoord(value) {
+        if (value == null || value === "") return null;
+        var n = Number(value);
+        return Number.isFinite(n) ? n : null;
     }
 
     function escapeHtml(str) {

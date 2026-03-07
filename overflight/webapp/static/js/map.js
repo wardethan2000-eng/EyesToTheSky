@@ -3,7 +3,7 @@
  *
  * Handles:
  * - MapLibre GL JS map initialization
- * - View toggle between card view and map view
+ * - Startup location overview and map recentering
  * - Aircraft marker rendering using GeoJSON source + symbol layers
  * - Search radius circle overlay
  * - Detail sidebar for clicked aircraft
@@ -15,8 +15,10 @@
 
     var map = null;
     var mapInitialized = false;
+    var mapLoaded = false;
     var selectedAircraft = null;
     var iconImagesLoaded = {};
+    var playbackBound = false;
 
     // DOM references (resolved on init)
     var mapSection, mapEl, mapLoading, mapLoadingText;
@@ -25,16 +27,22 @@
     var playbackControls, playPauseBtn, scrubber, timeLabel;
     var speedSelect, altitudeSelect, settingsToggle;
     var detailSidebar, detailClose, detailContent, detailDragHandle;
-    var viewToggle, btnCardView, btnMapView;
-    var resultsSection, flightList;
+    var flightList;
 
     // Current search params
     var searchLat = null;
     var searchLon = null;
     var searchRadius = null;
 
-    // Icon images loaded as Image objects keyed by category
-    var ICON_SIZE = 40; // px base size for widebody (1.0 multiplier)
+    var DEFAULT_US_VIEW = {
+        lat: 39.8283,
+        lon: -98.5795,
+        zoom: 3.5
+    };
+
+    // Marker sprite IDs used by the symbol layer.
+    var AIRCRAFT_ICON_ID = "aircraft-photo";
+    var AIRCRAFT_ICON_SELECTED_ID = "aircraft-photo-selected";
 
     function initDOM() {
         mapSection = document.getElementById("map-section");
@@ -55,16 +63,35 @@
         detailClose = document.getElementById("detail-close");
         detailContent = document.getElementById("detail-content");
         detailDragHandle = document.getElementById("detail-drag-handle");
-        viewToggle = document.getElementById("view-toggle");
-        btnCardView = document.getElementById("btn-card-view");
-        btnMapView = document.getElementById("btn-map-view");
-        resultsSection = document.getElementById("results-section");
         flightList = document.getElementById("flight-list");
+    }
+
+    function initOverview(opts) {
+        initDOM();
+
+        var lat = opts && typeof opts.lat === "number" ? opts.lat : null;
+        var lon = opts && typeof opts.lon === "number" ? opts.lon : null;
+        var radius = opts && typeof opts.radius === "number" ? opts.radius : null;
+
+        if (lat != null && lon != null) {
+            searchLat = lat;
+            searchLon = lon;
+            searchRadius = radius || 25;
+            ensureMap(lat, lon, getZoomForRadius(searchRadius));
+            onMapReady(function () {
+                drawSearchRadius();
+            });
+        } else {
+            ensureMap(DEFAULT_US_VIEW.lat, DEFAULT_US_VIEW.lon, DEFAULT_US_VIEW.zoom);
+            onMapReady(function () {
+                clearSearchRadius();
+            });
+        }
     }
 
     /**
      * Called by app.js after a successful flight search.
-     * Shows the view toggle and stores search params for map use.
+     * Stores search params, recenters map, and starts playback.
      */
     function onSearchComplete(lat, lon, radius) {
         initDOM();
@@ -72,61 +99,76 @@
         searchLon = lon;
         searchRadius = radius;
 
-        if (viewToggle) viewToggle.style.display = "flex";
-        bindViewToggle();
+        ensureMap(lat, lon, getZoomForRadius(radius));
+        onMapReady(function () {
+            centerMap(lat, lon, getZoomForRadius(radius));
+            drawSearchRadius();
+            startPlayback();
+        });
     }
 
-    function bindViewToggle() {
-        if (!btnCardView || !btnMapView) return;
+    function onMapReady(callback) {
+        if (mapLoaded) {
+            callback();
+            return;
+        }
 
-        btnCardView.onclick = function () {
-            showCardView();
-        };
-        btnMapView.onclick = function () {
-            showMapView();
-        };
+        if (!map) return;
+        map.once("load", callback);
+    }
+
+    function ensureMap(lat, lon, zoom) {
+        if (!mapInitialized) {
+            initMap(lat, lon, zoom);
+            return;
+        }
+
+        map.resize();
+    }
+
+    function centerMap(lat, lon, zoom) {
+        if (!map || !mapLoaded) return;
+
+        map.easeTo({
+            center: [lon, lat],
+            zoom: zoom,
+            duration: 750,
+            essential: true
+        });
     }
 
     function showCardView() {
-        if (btnCardView) btnCardView.classList.add("active");
-        if (btnMapView) btnMapView.classList.remove("active");
         if (flightList) flightList.style.display = "";
-        if (mapSection) mapSection.style.display = "none";
-        if (mapWarning) mapWarning.style.display = "none";
-        hideDetailSidebar();
     }
 
     function showMapView() {
-        if (btnMapView) btnMapView.classList.add("active");
-        if (btnCardView) btnCardView.classList.remove("active");
-        if (flightList) flightList.style.display = "none";
         if (mapSection) mapSection.style.display = "block";
-
-        if (!mapInitialized) {
-            initMap();
-        } else {
-            map.resize();
-        }
+        if (map) map.resize();
     }
 
-    function initMap() {
+    function initMap(initialLat, initialLon, initialZoom) {
         if (mapInitialized) return;
+
+        mapInitialized = true;
+
+        var centerLon = typeof initialLon === "number" ? initialLon : DEFAULT_US_VIEW.lon;
+        var centerLat = typeof initialLat === "number" ? initialLat : DEFAULT_US_VIEW.lat;
+        var zoom = typeof initialZoom === "number" ? initialZoom : DEFAULT_US_VIEW.zoom;
 
         map = new maplibregl.Map({
             container: "map",
             style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-            center: [searchLon, searchLat],
-            zoom: getZoomForRadius(searchRadius),
+            center: [centerLon, centerLat],
+            zoom: zoom,
             attributionControl: true
         });
 
         map.addControl(new maplibregl.NavigationControl(), "top-right");
 
         map.on("load", function () {
-            mapInitialized = true;
+            mapLoaded = true;
             setupMapLayers();
-            drawSearchRadius();
-            bindPlaybackControls();
+            bindPlaybackControlsOnce();
             syncRenderBudgetToZoom();
 
             map.on("zoomend", syncRenderBudgetToZoom);
@@ -134,8 +176,6 @@
                 var center = map.getCenter();
                 window.OverflightPlayback.setMapCenter(center.lat, center.lng);
             });
-
-            startPlayback();
         });
     }
 
@@ -268,15 +308,19 @@
                 "icon-image": [
                     "case",
                     ["==", ["get", "selected"], true],
-                    "aircraft-basic-selected",
-                    "aircraft-basic"
+                    AIRCRAFT_ICON_SELECTED_ID,
+                    AIRCRAFT_ICON_ID
                 ],
                 "icon-size": [
-                    "interpolate", ["linear"], ["get", "sizeMult"],
-                    0.3, 0.28,
-                    0.5, 0.34,
-                    0.75, 0.42,
-                    1.0, 0.52
+                    "*",
+                    [
+                        "interpolate", ["linear"], ["get", "sizeMult"],
+                        0.3, 0.58,
+                        0.5, 0.68,
+                        0.75, 0.82,
+                        1.0, 0.96
+                    ],
+                    ["case", ["==", ["get", "selected"], true], 1.12, 1.0]
                 ],
                 "icon-rotate": ["get", "heading"],
                 "icon-rotation-alignment": "map",
@@ -307,7 +351,8 @@
             }
         });
 
-        // Register the simple airplane icon used for all aircraft categories.
+        // Register base marker images. First add generated fallbacks, then try
+        // loading a higher-fidelity static image sprite from the app assets.
         createAircraftMarkerImages();
 
         // Click handler for detailed aircraft
@@ -327,12 +372,47 @@
     }
 
     function createAircraftMarkerImages() {
-        addAircraftMarkerImage("aircraft-basic", "#1f7ae0", "#0e3a6d");
-        addAircraftMarkerImage("aircraft-basic-selected", "#e8391a", "#ffffff");
+        addAircraftMarkerImage(AIRCRAFT_ICON_ID, "#1f7ae0", "#0e3a6d", 78);
+        addAircraftMarkerImage(AIRCRAFT_ICON_SELECTED_ID, "#e8391a", "#ffffff", 84);
+        loadAircraftSpriteImage();
     }
 
-    function addAircraftMarkerImage(name, fillColor, strokeColor) {
-        var size = 48;
+    function loadAircraftSpriteImage() {
+        // Allow dropping in a custom transparent PNG without code changes.
+        var preferred = "/static/img/aircraft/custom-plane.png";
+        var fallback = "/static/img/aircraft/widebody.svg";
+
+        tryLoadMapImage(preferred, function (imageData) {
+            upsertMapImage(AIRCRAFT_ICON_ID, imageData);
+            upsertMapImage(AIRCRAFT_ICON_SELECTED_ID, imageData);
+        }, function () {
+            tryLoadMapImage(fallback, function (imageData) {
+                upsertMapImage(AIRCRAFT_ICON_ID, imageData);
+                upsertMapImage(AIRCRAFT_ICON_SELECTED_ID, imageData);
+            });
+        });
+    }
+
+    function tryLoadMapImage(url, onSuccess, onError) {
+        map.loadImage(url, function (err, image) {
+            if (err || !image) {
+                if (onError) onError();
+                return;
+            }
+            if (onSuccess) onSuccess(image);
+        });
+    }
+
+    function upsertMapImage(name, imageData) {
+        if (map.hasImage(name)) {
+            map.updateImage(name, imageData);
+        } else {
+            map.addImage(name, imageData);
+        }
+    }
+
+    function addAircraftMarkerImage(name, fillColor, strokeColor, size) {
+        size = size || 48;
         var canvas = document.createElement("canvas");
         canvas.width = size;
         canvas.height = size;
@@ -342,24 +422,24 @@
         var cy = size / 2;
         ctx.translate(cx, cy);
 
-        // Simple airplane silhouette pointing up.
+        // Simple airplane fallback silhouette pointing up.
         ctx.beginPath();
-        ctx.moveTo(0, -18);      // nose
-        ctx.lineTo(3, -7);       // upper fuselage right
-        ctx.lineTo(11, -5);      // right wing tip
-        ctx.lineTo(10, -1);      // right wing trailing edge
-        ctx.lineTo(3, -1);       // fuselage right
-        ctx.lineTo(3, 10);       // right tail root
-        ctx.lineTo(7, 13);       // right tail tip
-        ctx.lineTo(6, 16);       // right tail lower
-        ctx.lineTo(0, 13);       // tail center
-        ctx.lineTo(-6, 16);      // left tail lower
-        ctx.lineTo(-7, 13);      // left tail tip
-        ctx.lineTo(-3, 10);      // left tail root
-        ctx.lineTo(-3, -1);      // fuselage left
-        ctx.lineTo(-10, -1);     // left wing trailing edge
-        ctx.lineTo(-11, -5);     // left wing tip
-        ctx.lineTo(-3, -7);      // upper fuselage left
+        ctx.moveTo(0, -28);
+        ctx.lineTo(4, -11);
+        ctx.lineTo(16, -8);
+        ctx.lineTo(15, -2);
+        ctx.lineTo(4, -2);
+        ctx.lineTo(4, 14);
+        ctx.lineTo(10, 19);
+        ctx.lineTo(9, 23);
+        ctx.lineTo(0, 18);
+        ctx.lineTo(-9, 23);
+        ctx.lineTo(-10, 19);
+        ctx.lineTo(-4, 14);
+        ctx.lineTo(-4, -2);
+        ctx.lineTo(-15, -2);
+        ctx.lineTo(-16, -8);
+        ctx.lineTo(-4, -11);
         ctx.closePath();
 
         ctx.fillStyle = fillColor;
@@ -368,13 +448,11 @@
         ctx.strokeStyle = strokeColor;
         ctx.stroke();
 
-        if (!map.hasImage(name)) {
-            map.addImage(name, {
-                width: size,
-                height: size,
-                data: ctx.getImageData(0, 0, size, size).data
-            });
-        }
+        upsertMapImage(name, {
+            width: size,
+            height: size,
+            data: ctx.getImageData(0, 0, size, size).data
+        });
     }
 
     function emptyFeatureCollection() {
@@ -384,7 +462,12 @@
     // --- Search Radius Circle ---
 
     function drawSearchRadius() {
-        if (!searchLat || !searchLon || !searchRadius) return;
+        if (!map || !mapLoaded || !map.getSource("search-radius")) return;
+
+        if (searchLat == null || searchLon == null || searchRadius == null) {
+            clearSearchRadius();
+            return;
+        }
 
         var center = [searchLon, searchLat];
         var radiusKm = searchRadius * 1.60934;
@@ -407,6 +490,11 @@
                 coordinates: [coords]
             }
         });
+    }
+
+    function clearSearchRadius() {
+        if (!map || !mapLoaded || !map.getSource("search-radius")) return;
+        map.getSource("search-radius").setData(emptyFeatureCollection());
     }
 
     // --- Aircraft Rendering ---
@@ -507,7 +595,10 @@
 
     // --- Playback Controls ---
 
-    function bindPlaybackControls() {
+    function bindPlaybackControlsOnce() {
+        if (playbackBound) return;
+        playbackBound = true;
+
         playPauseBtn.onclick = function () {
             var playing = window.OverflightPlayback.togglePlayPause();
             playPauseBtn.innerHTML = playing ? "&#9646;&#9646;" : "&#9654;";
@@ -563,6 +654,8 @@
     }
 
     function startPlayback() {
+        if (searchLat == null || searchLon == null || searchRadius == null) return;
+
         mapLoading.style.display = "flex";
         if (mapWarning) mapWarning.style.display = "none";
 
@@ -595,9 +688,11 @@
                 if (state && (state.empty || state.error)) {
                     playbackControls.style.display = "none";
                     mapLoading.style.display = "flex";
+                    mapLoading.classList.remove("is-empty");
                     if (state.empty && state.collecting) {
                         mapLoadingText.textContent = "Collecting flight data - check back in a few minutes.";
                     } else if (state.empty) {
+                        mapLoading.classList.add("is-empty");
                         mapLoadingText.textContent = "No aircraft data available for this area yet.";
                     } else {
                         mapLoadingText.textContent = "Unable to load playback data. Please try again.";
@@ -605,7 +700,16 @@
                     return;
                 }
 
+                if (state && state.staticOnly) {
+                    mapLoading.classList.remove("is-empty");
+                    mapLoading.style.display = "none";
+                    playbackControls.style.display = "none";
+                    showMapWarning("Showing latest position snapshots. Animated playback will appear as track history fills in.");
+                    return;
+                }
+
                 applySuggestedAltitude(state);
+                mapLoading.classList.remove("is-empty");
                 mapLoading.style.display = "none";
                 playbackControls.style.display = "flex";
 
@@ -822,6 +926,7 @@
 
     // Expose globally for app.js integration
     window.OverflightMap = {
+        initOverview: initOverview,
         onSearchComplete: onSearchComplete,
         showMapView: showMapView,
         showCardView: showCardView

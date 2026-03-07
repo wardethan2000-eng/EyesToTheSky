@@ -51,6 +51,50 @@
     var mapCenterLat = 0;
     var mapCenterLon = 0;
     var searchRadiusMiles = 0;
+    var playbackDay = (window.OVERFLIGHT.playbackDay || "").trim();
+
+    function buildBackfillStatusText(backfill) {
+        if (!backfill || !backfill.attempted) {
+            return "";
+        }
+
+        if (backfill.cooldown) {
+            return " | Backfill: cooldown active, please retry shortly.";
+        }
+
+        return " | Backfill: fetched " + backfill.fetched +
+            ", inserted " + backfill.inserted +
+            ", tracks built " + backfill.segments + ".";
+    }
+
+    function emitSnapshotFallback(snapshotFlights) {
+        var visible = (snapshotFlights || []).map(function (f, idx) {
+            return {
+                id: "snapshot-" + (f.icao24 || idx),
+                icao24: f.icao24 || "",
+                callsign: f.callsign || "",
+                phase: f.on_ground ? "ground" : "enroute",
+                lat: f.latitude,
+                lon: f.longitude,
+                altitude: f.altitude || 0,
+                heading: f.heading || 0,
+                avg_velocity: null,
+                avg_heading: f.heading || 0
+            };
+        }).filter(function (ac) {
+            return ac.lat != null && ac.lon != null;
+        });
+
+        visible.sort(function (a, b) {
+            var dA = quickDist(a.lat, a.lon, mapCenterLat, mapCenterLon);
+            var dB = quickDist(b.lat, b.lon, mapCenterLat, mapCenterLon);
+            return dA - dB;
+        });
+
+        var detailed = visible.slice(0, currentRenderBudget);
+        var dots = visible.slice(currentRenderBudget);
+        onAircraftUpdate(detailed, dots, visible.length, []);
+    }
 
     /**
      * Initialize playback for a location.
@@ -81,61 +125,115 @@
 
         emitLoadingProgress("Fetching playback plan...", 0);
 
-        var url = "/api/tracks/plan?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
-        if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
+        function buildPlanUrl(dayParam) {
+            var url = "/api/tracks/plan?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
+            if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
+            if (dayParam) url += "&day=" + encodeURIComponent(dayParam);
+            return url;
+        }
 
-        fetch(url)
-            .then(function (resp) {
-                if (!resp.ok) throw new Error("Failed to fetch plan");
-                return resp.json();
-            })
-            .then(function (data) {
-                plan = data;
-                if (!plan.chunks || plan.chunks.length === 0 || (plan.total_unique_aircraft || 0) <= 0) {
-                    onLoadingProgress({
-                        message: "Collecting flight data - check back in a few minutes.",
-                        percent: 100,
-                        collecting: true
-                    });
-                    onAircraftUpdate([], [], 0);
-                    onPlaybackTimeChange(0, 0);
-                    onReady({
-                        empty: true,
-                        collecting: true,
-                        density: plan.density,
-                        suggestedMinAlt: plan.suggested_min_alt,
-                        totalUniqueAircraft: plan.total_unique_aircraft || 0
-                    });
-                    return;
-                }
-                playbackStart = plan.chunks[0].start;
-                playbackEnd = plan.chunks[plan.chunks.length - 1].end;
-                initialChunkIndex = findInitialChunkIndex(plan);
-                playbackTime = plan.chunks[initialChunkIndex].start;
+        function requestPlan(dayParam, attemptedFallback) {
+            return fetch(buildPlanUrl(dayParam))
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("Failed to fetch plan");
+                    return resp.json();
+                })
+                .then(function (data) {
+                    var hasNoPlaybackTracks = !data.chunks || data.chunks.length === 0 || (data.total_unique_aircraft || 0) <= 0;
 
-                // Load initial chunk (first with data when available), then signal ready.
-                loadChunk(initialChunkIndex, function () {
-                    // Render the initial playback frame immediately so aircraft are visible
-                    // even before the user presses play or touches the scrubber.
-                    updateVisibleAircraft();
-                    var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
-                    onPlaybackTimeChange(playbackTime, initialProgress);
-
-                    emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
-                    onReady({
-                        density: plan.density,
-                        suggestedMinAlt: plan.suggested_min_alt,
-                        totalUniqueAircraft: plan.total_unique_aircraft || 0
-                    });
-                    // Prefetch neighboring chunks around the initial playback window.
-                    if (initialChunkIndex + 1 < plan.chunks.length) {
-                        loadChunk(initialChunkIndex + 1);
+                    if (hasNoPlaybackTracks && dayParam && !attemptedFallback) {
+                        onLoadingProgress({
+                            message: "No playback history for " + dayParam + " in this area. Loading latest available timeline...",
+                            percent: 45,
+                            warning: true
+                        });
+                        return requestPlan("", true);
                     }
-                    if (initialChunkIndex - 1 >= 0) {
-                        loadChunk(initialChunkIndex - 1);
+
+                    plan = data;
+
+                    if (attemptedFallback) {
+                        onLoadingProgress({
+                            message: "Using latest available playback window.",
+                            warning: true
+                        });
                     }
+
+                    if (!plan.chunks || plan.chunks.length === 0 || (plan.total_unique_aircraft || 0) <= 0) {
+                        var isCollecting = !!plan.is_collecting;
+                        var snapshots = plan.snapshot_flights || [];
+                        var backfillSuffix = buildBackfillStatusText(plan.backfill_status);
+
+                        if (!isCollecting && snapshots.length > 0) {
+                            emitSnapshotFallback(snapshots);
+                            onPlaybackTimeChange(0, 0);
+                            onLoadingProgress({
+                                message: "Showing latest aircraft snapshots for this area." + backfillSuffix,
+                                percent: 100,
+                                collecting: false
+                            });
+                            onReady({
+                                staticOnly: true,
+                                snapshotCount: snapshots.length,
+                                density: plan.density,
+                                suggestedMinAlt: plan.suggested_min_alt,
+                                totalUniqueAircraft: plan.total_unique_aircraft || 0
+                            });
+                            return;
+                        }
+
+                        var message = isCollecting
+                            ? "Collecting flight data - check back in a few minutes." + backfillSuffix
+                            : "No playback traffic found for this area in the last 24 hours." + backfillSuffix;
+
+                        onLoadingProgress({
+                            message: message,
+                            percent: 100,
+                            collecting: isCollecting
+                        });
+                        onAircraftUpdate([], [], 0);
+                        onPlaybackTimeChange(0, 0);
+                        onReady({
+                            empty: true,
+                            collecting: isCollecting,
+                            density: plan.density,
+                            suggestedMinAlt: plan.suggested_min_alt,
+                            totalUniqueAircraft: plan.total_unique_aircraft || 0
+                        });
+                        return;
+                    }
+
+                    playbackStart = plan.chunks[0].start;
+                    playbackEnd = plan.chunks[plan.chunks.length - 1].end;
+                    initialChunkIndex = findInitialChunkIndex(plan);
+                    playbackTime = plan.chunks[initialChunkIndex].start;
+
+                    // Load initial chunk (first with data when available), then signal ready.
+                    loadChunk(initialChunkIndex, function () {
+                        // Render the initial playback frame immediately so aircraft are visible
+                        // even before the user presses play or touches the scrubber.
+                        updateVisibleAircraft();
+                        var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
+                        onPlaybackTimeChange(playbackTime, initialProgress);
+
+                        emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
+                        onReady({
+                            density: plan.density,
+                            suggestedMinAlt: plan.suggested_min_alt,
+                            totalUniqueAircraft: plan.total_unique_aircraft || 0
+                        });
+                        // Prefetch neighboring chunks around the initial playback window.
+                        if (initialChunkIndex + 1 < plan.chunks.length) {
+                            loadChunk(initialChunkIndex + 1);
+                        }
+                        if (initialChunkIndex - 1 >= 0) {
+                            loadChunk(initialChunkIndex - 1);
+                        }
+                    });
                 });
-            })
+        }
+
+        requestPlan(playbackDay, false)
             .catch(function () {
                 onLoadingProgress({
                     message: "Failed to load playback data.",

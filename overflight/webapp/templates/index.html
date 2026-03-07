@@ -4,31 +4,32 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OverFlight — What's Flying Over You?</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 </head>
 <body>
-    <header class="site-header">
-        <div class="container">
-            <h1 class="logo">&#9992; OverFlight</h1>
-            <p class="tagline">What's Flying Over You?</p>
+    <div class="app-bg" aria-hidden="true"></div>
+
+    <header class="app-header">
+        <div class="app-header-inner">
+            <div class="brand-wrap">
+                <h1 class="logo">OverFlight</h1>
+                <p class="tagline">What is flying over you right now</p>
+            </div>
+            <p class="header-note">24-hour ADS-B activity map</p>
         </div>
     </header>
 
-    <!-- Ad placement: top banner -->
-    <div class="ad-slot ad-slot-top">
-        <div class="container">
-            <div class="ad-placeholder">Advertisement</div>
-        </div>
-    </div>
+    <main class="app-shell">
+        <aside class="control-panel" id="search-panel" aria-label="Location and flights">
+            <section class="panel-card search-card">
+                <h2>Find aircraft near a place</h2>
 
-    <main class="container">
-        <section class="search-panel" id="search-panel">
-            <h2>Find aircraft that flew over your location</h2>
-
-            <div class="location-input">
                 <div class="input-group">
-                    <label for="zipcode-input">Enter your zip code</label>
+                    <label for="zipcode-input">US ZIP code</label>
                     <div class="input-row">
                         <input
                             type="text"
@@ -44,75 +45,67 @@
                     </div>
                 </div>
 
-                <div class="divider"><span>or</span></div>
+                <button id="geo-btn" type="button" class="geo-button">Use My Location</button>
 
-                <button id="geo-btn" type="button" class="geo-button">
-                    &#128205; Use My Location
-                </button>
-            </div>
-
-            <div class="radius-selector">
-                <label for="radius-select">Search radius:</label>
-                <select id="radius-select" name="radius">
-                    {% for r in radius_options %}
-                    <option value="{{ r }}" {% if r == default_radius %}selected{% endif %}>
-                        {{ r }} miles
-                    </option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div id="location-info" class="location-info" style="display:none;">
-                <span id="location-text"></span>
-            </div>
-
-            <div id="error-msg" class="error-msg" style="display:none;"></div>
-        </section>
-
-        <section id="loading" class="loading" style="display:none;">
-            <div class="spinner"></div>
-            <p>Searching for aircraft&hellip;</p>
-        </section>
-
-        <section id="results-section" class="results-section" style="display:none;">
-            <div class="results-header">
-                <h2 id="results-title"></h2>
-                <p id="results-subtitle" class="results-subtitle"></p>
-                <div class="view-toggle" id="view-toggle" style="display:none;">
-                    <button class="view-toggle-btn active" data-view="cards" id="btn-card-view">&#9776; Cards</button>
-                    <button class="view-toggle-btn" data-view="map" id="btn-map-view">&#9992; Map</button>
+                <div class="radius-selector">
+                    <label for="radius-select">Radius</label>
+                    <select id="radius-select" name="radius">
+                        {% for r in radius_options %}
+                        <option value="{{ r }}" {% if r == default_radius %}selected{% endif %}>
+                            {{ r }} miles
+                        </option>
+                        {% endfor %}
+                    </select>
                 </div>
-            </div>
 
-            <div id="flight-list" class="flight-list">
-                <!-- Flight cards rendered by JavaScript -->
-            </div>
+                <div id="location-info" class="location-info" style="display:none;">
+                    <span id="location-text"></span>
+                </div>
 
-            <!-- Ad placement: between results -->
-            <div class="ad-slot ad-slot-mid">
-                <div class="ad-placeholder">Advertisement</div>
-            </div>
-        </section>
+                <div id="error-msg" class="error-msg" style="display:none;"></div>
+            </section>
 
-        <!-- Map view section -->
-        <section id="map-section" class="map-section" style="display:none;">
+            <section id="loading" class="loading panel-card" style="display:none;">
+                <div class="spinner"></div>
+                <p>Searching for aircraft...</p>
+            </section>
+
+            <section id="results-section" class="results-section" style="display:none;">
+                <div class="results-header panel-card">
+                    <h2 id="results-title"></h2>
+                    <p id="results-subtitle" class="results-subtitle"></p>
+                </div>
+
+                <div id="flight-list" class="flight-list" aria-live="polite">
+                    <!-- Flight cards rendered by JavaScript -->
+                </div>
+            </section>
+
+            <section id="no-results" class="no-results panel-card" style="display:none;">
+                <h2>No aircraft found</h2>
+                <p>No aircraft were detected within your selected radius in the past 24 hours.</p>
+                <p class="hint">Try increasing the search radius or check back later.</p>
+            </section>
+        </aside>
+
+        <section id="map-section" class="map-section" aria-label="Aircraft map">
             <div id="map-container" class="map-container">
                 <div id="map" class="map"></div>
 
-                <!-- Loading overlay -->
-                <div id="map-loading" class="map-loading" style="display:none;">
-                    <div class="spinner"></div>
-                    <p id="map-loading-text">Loading aircraft data&hellip;</p>
+                <div class="map-top-bar">
+                    <div class="map-chip">Live area overview</div>
+                    <div id="aircraft-counter" class="aircraft-counter" style="display:none;">
+                        <span id="aircraft-counter-text"></span>
+                    </div>
                 </div>
 
-                <!-- Aircraft counter overlay -->
-                <div id="aircraft-counter" class="aircraft-counter" style="display:none;">
-                    <span id="aircraft-counter-text"></span>
+                <div id="map-loading" class="map-loading" style="display:none;">
+                    <div class="spinner"></div>
+                    <p id="map-loading-text">Loading aircraft data...</p>
                 </div>
 
                 <div id="map-warning" class="map-warning" style="display:none;"></div>
 
-                <!-- Playback controls -->
                 <div id="playback-controls" class="playback-controls" style="display:none;">
                     <button id="playback-play-pause" class="playback-btn" title="Play/Pause">&#9654;</button>
                     <div class="playback-timeline">
@@ -136,25 +129,18 @@
                 </div>
             </div>
 
-            <!-- Detail sidebar -->
             <div id="detail-sidebar" class="detail-sidebar" style="display:none;">
                 <div id="detail-drag-handle" class="detail-drag-handle" aria-hidden="true"></div>
                 <button id="detail-close" class="detail-close">&times;</button>
                 <div id="detail-content" class="detail-content">
-                    <!-- Populated by JS when aircraft clicked -->
+                    <!-- Populated by JavaScript when aircraft clicked -->
                 </div>
             </div>
-        </section>
-
-        <section id="no-results" class="no-results" style="display:none;">
-            <h2>No aircraft found</h2>
-            <p>No aircraft were detected within your search radius in the past 24 hours.</p>
-            <p class="hint">Try increasing the search radius or check back later. Results depend on ADS-B coverage in your area.</p>
         </section>
     </main>
 
     <footer class="site-footer">
-        <div class="container">
+        <div class="site-footer-inner">
             <p>
                 OverFlight uses publicly broadcast ADS-B data from the
                 <a href="https://opensky-network.org" target="_blank" rel="noopener">OpenSky Network</a>.
@@ -166,19 +152,12 @@
         </div>
     </footer>
 
-    <!-- Ad placement: bottom banner -->
-    <div class="ad-slot ad-slot-bottom">
-        <div class="container">
-            <div class="ad-placeholder">Advertisement</div>
-        </div>
-    </div>
-
-    <!-- Pass server-side values to JavaScript -->
     <script>
         window.OVERFLIGHT = {
             savedLat: {{ saved_lat if saved_lat else 'null' }},
             savedLon: {{ saved_lon if saved_lon else 'null' }},
             savedZip: "{{ saved_zip }}",
+            playbackDay: "{{ playback_day }}",
             defaultRadius: {{ default_radius }},
             maxRadius: {{ max_radius }},
             playbackSpeedRatio: {{ config.PLAYBACK_SPEED_RATIO }},
