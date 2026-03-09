@@ -58,9 +58,7 @@
         zoom: 3.5
     };
 
-    // Marker sprite IDs used by the symbol layer.
-    var AIRCRAFT_ICON_ID = "aircraft-photo";
-    var AIRCRAFT_ICON_SELECTED_ID = "aircraft-photo-selected";
+    var AIRCRAFT_ICON_ID_PREFIX = "aircraft-category-";
 
     function initDOM() {
         mapSection = document.getElementById("map-section");
@@ -589,12 +587,7 @@
             source: "aircraft-detailed",
             minzoom: 9,
             layout: {
-                "icon-image": [
-                    "case",
-                    ["==", ["get", "selected"], true],
-                    AIRCRAFT_ICON_SELECTED_ID,
-                    AIRCRAFT_ICON_ID
-                ],
+                "icon-image": ["coalesce", ["get", "iconImage"], getMapIconId("basic")],
                 "icon-size": [
                     "*",
                     [
@@ -675,24 +668,85 @@
     }
 
     function createAircraftMarkerImages() {
-        addAircraftMarkerImage(AIRCRAFT_ICON_ID, "#2b8cef", "#0b4a8a", 64);
-        addAircraftMarkerImage(AIRCRAFT_ICON_SELECTED_ID, "#ff5733", "#ffffff", 72);
+        var categories = (window.OverflightIcons && window.OverflightIcons.CATEGORIES) || {};
+        var keys = Object.keys(categories);
+        var index;
+
+        if (!keys.length) {
+            addAircraftMarkerImage(getMapIconId("basic"), "#2b8cef", "#0b4a8a", 64);
+            return;
+        }
+
+        for (index = 0; index < keys.length; index += 1) {
+            registerAircraftCategoryImage(keys[index], categories[keys[index]]);
+        }
     }
 
-    function loadAircraftSpriteImage() {
-        // Allow dropping in a custom transparent PNG without code changes.
-        var preferred = "/static/img/aircraft/custom-plane.png";
-        var fallback = "/static/img/aircraft/widebody.svg";
+    function getMapIconId(category) {
+        return AIRCRAFT_ICON_ID_PREFIX + (category || "basic");
+    }
 
-        tryLoadMapImage(preferred, function (imageData) {
-            upsertMapImage(AIRCRAFT_ICON_ID, imageData);
-            upsertMapImage(AIRCRAFT_ICON_SELECTED_ID, imageData);
-        }, function () {
-            tryLoadMapImage(fallback, function (imageData) {
-                upsertMapImage(AIRCRAFT_ICON_ID, imageData);
-                upsertMapImage(AIRCRAFT_ICON_SELECTED_ID, imageData);
-            });
+    function registerAircraftCategoryImage(category, info) {
+        var iconName = getMapIconId(category);
+        var path = info && info.icon ? "/static/img/aircraft/" + info.icon : null;
+
+        addAircraftMarkerImage(iconName, "#2b8cef", "#0b4a8a", 64);
+
+        if (!path || iconImagesLoaded[iconName]) {
+            return;
+        }
+
+        iconImagesLoaded[iconName] = true;
+        loadRasterizedMapImage(path, 64, function (imageData) {
+            upsertMapImage(iconName, imageData);
         });
+    }
+
+    function loadRasterizedMapImage(url, size, onSuccess, onError) {
+        var img = new Image();
+        img.decoding = "async";
+
+        img.onload = function () {
+            try {
+                var canvas = document.createElement("canvas");
+                var ctx;
+                var scale;
+                var drawWidth;
+                var drawHeight;
+                var offsetX;
+                var offsetY;
+
+                canvas.width = size;
+                canvas.height = size;
+                ctx = canvas.getContext("2d");
+
+                if (!ctx) {
+                    if (onError) onError();
+                    return;
+                }
+
+                scale = Math.min(size / img.width, size / img.height);
+                drawWidth = img.width * scale;
+                drawHeight = img.height * scale;
+                offsetX = (size - drawWidth) / 2;
+                offsetY = (size - drawHeight) / 2;
+
+                ctx.clearRect(0, 0, size, size);
+                ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+
+                if (onSuccess) {
+                    onSuccess(ctx.getImageData(0, 0, size, size));
+                }
+            } catch (err) {
+                if (onError) onError(err);
+            }
+        };
+
+        img.onerror = function () {
+            if (onError) onError();
+        };
+
+        img.src = url;
     }
 
     function tryLoadMapImage(url, onSuccess, onError) {
@@ -1012,8 +1066,10 @@
             }
 
             var iconInfo = window.OverflightIcons.getAircraftIcon({
-                model: null,
-                operator: null
+                model: ac.model || ac.aircraft_model || ac.type || null,
+                operator: ac.operator || ac.airline || null,
+                manufacturer: ac.manufacturer || null,
+                category: ac.category || null
             });
 
             if (!aircraftFirstSeen[ac.id]) {
@@ -1037,6 +1093,7 @@
                     heading: ac.heading || 0,
                     sizeMult: iconInfo.size,
                     category: iconInfo.category,
+                    iconImage: getMapIconId(iconInfo.category),
                     selected: !!(selectedAircraft && selectedAircraft.icao24 === ac.icao24),
                     opacity: opacity
                 }
@@ -1464,6 +1521,9 @@
 
         var html =
             '<div class="detail-header">' +
+                '<div class="detail-image-frame">' +
+                    '<img class="detail-aircraft-image" src="' + escapeHtml(iconInfo.path) + '" alt="' + escapeHtml(iconInfo.label + ' aircraft') + '">' +
+                '</div>' +
                 '<div class="detail-icon-badge" style="background:' + altitudeColor(alt) + '">' +
                     '<span class="detail-icon-label">' + escapeHtml(iconInfo.label) + '</span>' +
                 '</div>' +

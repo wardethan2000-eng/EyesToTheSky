@@ -556,17 +556,41 @@ def api_tracks():
         if flight_conn is not None:
             flight_conn.close()
 
+    track_enrichment = {}
+    enrichment_conn = None
+    try:
+        enrichment_conn = get_enrichment_db()
+        from overflight.database.enrichment import lookup_aircraft_batch
+
+        track_enrichment = lookup_aircraft_batch(
+            enrichment_conn,
+            [t["icao24"] for t in tracks if t.get("icao24")],
+        )
+    except Exception:
+        logger.warning("Track enrichment failed, returning unenriched tracks", exc_info=True)
+    finally:
+        if enrichment_conn is not None:
+            enrichment_conn.close()
+
     # Determine density classification and suggestion
     density, suggested_min_alt = _classify_density(total_in_area)
 
     # Build response tracks (serialize for JSON)
     track_list = []
     for t in tracks:
+        aircraft = track_enrichment.get(t["icao24"], {})
         track_list.append({
             "id": t["id"],
             "icao24": t["icao24"],
             "callsign": t.get("callsign"),
             "phase": t["phase"],
+            "registration": aircraft.get("registration"),
+            "manufacturer": aircraft.get("manufacturer"),
+            "model": aircraft.get("model"),
+            "operator": aircraft.get("operator"),
+            "owner": aircraft.get("owner"),
+            "built_year": aircraft.get("built_year"),
+            "registered_country": aircraft.get("registered_country"),
             "polyline": t["polyline"],
             "start_time": t["start_time"],
             "end_time": t["end_time"],

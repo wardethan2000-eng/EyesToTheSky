@@ -186,6 +186,20 @@ class TestTracksEndpoint(TracksAPITestCase):
         ]:
             self.assertIn(field, track)
 
+    def test_tracks_include_enrichment_fields(self):
+        resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=50")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        tracks_by_icao = {track["icao24"]: track for track in data["tracks"]}
+
+        self.assertEqual(tracks_by_icao["a1b2c3"]["manufacturer"], "Boeing")
+        self.assertEqual(tracks_by_icao["a1b2c3"]["model"], "737-800")
+        self.assertEqual(tracks_by_icao["a1b2c3"]["operator"], "United Airlines")
+        self.assertEqual(tracks_by_icao["d4e5f6"]["manufacturer"], "Airbus")
+
+        self.assertIsNone(tracks_by_icao["dep001"]["manufacturer"])
+        self.assertIsNone(tracks_by_icao["dep001"]["model"])
+
     def test_tracks_departure_includes_liftoff_metadata(self):
         resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=50&phase=departure")
         self.assertEqual(resp.status_code, 200)
