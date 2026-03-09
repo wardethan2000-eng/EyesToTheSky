@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import signal
 import sys
 import threading
@@ -43,6 +44,10 @@ logger = logging.getLogger("overflight.poller")
 
 shutdown_event = threading.Event()
 
+AREA_PRESETS = {
+    "wichita-ks": (37.6889, -97.3361),
+}
+
 
 def _parse_bbox(value):
     """Parse CLI bbox argument as: min_lat,max_lat,min_lon,max_lon."""
@@ -68,6 +73,16 @@ def _parse_bbox(value):
         raise argparse.ArgumentTypeError("bbox min values must be less than max values")
 
     return (min_lat, max_lat, min_lon, max_lon)
+
+
+def _bbox_from_center(lat, lon, radius_miles):
+    """Build an approximate bounding box around a center point."""
+    lat_delta = radius_miles / 69.0
+    cos_lat = math.cos(math.radians(lat))
+    if abs(cos_lat) < 1e-6:
+        cos_lat = 1e-6 if cos_lat >= 0 else -1e-6
+    lon_delta = radius_miles / (69.0 * cos_lat)
+    return (lat - lat_delta, lat + lat_delta, lon - lon_delta, lon + lon_delta)
 
 
 def cleanup_worker(db_path, interval_minutes):
@@ -178,6 +193,36 @@ def main():
         ),
     )
     parser.add_argument(
+        "--lat",
+        type=float,
+        help="Center latitude for a focused area capture.",
+    )
+    parser.add_argument(
+        "--lon",
+        type=float,
+        help="Center longitude for a focused area capture.",
+    )
+    parser.add_argument(
+        "--radius",
+        type=float,
+        default=25.0,
+        help="Radius in miles for --lat/--lon or --preset-area capture (default: 25).",
+    )
+    parser.add_argument(
+        "--preset-area",
+        choices=sorted(AREA_PRESETS.keys()),
+        help="Named test area preset. Current option: wichita-ks.",
+    )
+    parser.add_argument(
+        "--duration-hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Stop after approximately this many hours of polling. "
+            "If set and --max-polls is not provided, max polls is derived from the poll interval."
+        ),
+    )
+    parser.add_argument(
         "--test-mode",
         action="store_true",
         help=(
@@ -199,6 +244,25 @@ def main():
         parser.error("--max-idle-backoff must be >= --poll-interval")
     if args.max_polls < 0:
         parser.error("--max-polls must be >= 0")
+    if args.radius <= 0:
+        parser.error("--radius must be > 0")
+    if (args.lat is None) != (args.lon is None):
+        parser.error("--lat and --lon must be provided together")
+    if args.duration_hours < 0:
+        parser.error("--duration-hours must be >= 0")
+    if args.preset_area and (args.lat is not None or args.lon is not None):
+        parser.error("Use either --preset-area or --lat/--lon, not both")
+
+    preset_lat = None
+    preset_lon = None
+    if args.preset_area:
+        preset_lat, preset_lon = AREA_PRESETS[args.preset_area]
+
+    area_bbox = None
+    if preset_lat is not None and preset_lon is not None:
+        area_bbox = _bbox_from_center(preset_lat, preset_lon, args.radius)
+    elif args.lat is not None and args.lon is not None:
+        area_bbox = _bbox_from_center(args.lat, args.lon, args.radius)
 
     if args.test_mode:
         # Apply safer defaults for local/manual testing without overriding explicit flags.
@@ -216,6 +280,9 @@ def main():
             args.conus_only,
             args.bbox,
         )
+
+    if args.duration_hours > 0 and "--max-polls" not in sys.argv:
+        args.max_polls = max(1, math.ceil((args.duration_hours * 3600) / args.poll_interval))
 
     if args.rebuild_tracks:
         from overflight.database.tracks import build_tracks
@@ -250,7 +317,9 @@ def main():
     from overflight.ingestion.poller import poll_once
 
     conn, has_spatialite = init_flight_db(args.db_path)
-    bbox = args.bbox if args.bbox is not None else (CONUS_BBOX if args.conus_only else INGEST_BBOX)
+    bbox = args.bbox if args.bbox is not None else area_bbox
+    if bbox is None:
+        bbox = CONUS_BBOX if args.conus_only else INGEST_BBOX
 
     logger.info(
         (
@@ -263,6 +332,17 @@ def main():
         has_spatialite,
         bbox,
     )
+
+    if area_bbox is not None:
+        center_lat = preset_lat if preset_lat is not None else args.lat
+        center_lon = preset_lon if preset_lon is not None else args.lon
+        logger.info(
+            "Area capture mode: center=(%.4f, %.4f), radius=%.1fmi, approx daily credits at current interval=%d",
+            center_lat,
+            center_lon,
+            args.radius,
+            math.ceil(86400 / args.poll_interval),
+        )
 
     # Initialize tracks table
     init_tracks_db(args.db_path, use_spatialite=False)

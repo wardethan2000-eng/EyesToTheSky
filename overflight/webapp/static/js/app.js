@@ -20,16 +20,23 @@
     const locationInfo = document.getElementById("location-info");
     const locationText = document.getElementById("location-text");
     const errorMsg = document.getElementById("error-msg");
+    const timeFilterGrid = document.getElementById("time-filter-grid");
+    const timeFilterButtons = Array.prototype.slice.call(document.querySelectorAll("[data-window]"));
     const loadingSection = document.getElementById("loading");
     const resultsSection = document.getElementById("results-section");
     const resultsTitle = document.getElementById("results-title");
     const resultsSubtitle = document.getElementById("results-subtitle");
     const flightList = document.getElementById("flight-list");
     const noResults = document.getElementById("no-results");
+    const noResultsHeading = document.querySelector("#no-results h2");
+    const noResultsBody = document.querySelector("#no-results p");
 
     // --- State ---
     let currentLat = parseCoord(window.OVERFLIGHT.savedLat);
     let currentLon = parseCoord(window.OVERFLIGHT.savedLon);
+    let currentTimeWindow = "last_24_hours";
+    let currentWindowLabel = defaultWindowLabel(currentTimeWindow);
+    let activeQuery = null;
 
     // --- Init ---
     function init() {
@@ -43,6 +50,9 @@
                 fetchFlights(currentLat, currentLon);
             }
         });
+        if (timeFilterGrid) {
+            timeFilterGrid.addEventListener("click", onTimeFilterClick);
+        }
 
         if (window.OverflightMap && typeof window.OverflightMap.initOverview === "function") {
             window.OverflightMap.initOverview({
@@ -201,6 +211,37 @@
             });
     }
 
+    function onTimeFilterClick(e) {
+        var btn = e.target.closest("[data-window]");
+        if (!btn) return;
+
+        var nextWindow = btn.getAttribute("data-window") || "last_24_hours";
+        if (nextWindow === currentTimeWindow) return;
+
+        currentTimeWindow = nextWindow;
+        currentWindowLabel = defaultWindowLabel(currentTimeWindow);
+        syncTimeFilterButtons();
+
+        if (currentLat != null && currentLon != null) {
+            fetchFlights(currentLat, currentLon);
+        }
+    }
+
+    function setTimeWindow(windowKey, options) {
+        var nextWindow = windowKey || "last_24_hours";
+        currentTimeWindow = nextWindow;
+        currentWindowLabel = defaultWindowLabel(currentTimeWindow);
+        syncTimeFilterButtons();
+
+        if (options && options.fetch === false) {
+            return;
+        }
+
+        if (currentLat != null && currentLon != null) {
+            fetchFlights(currentLat, currentLon);
+        }
+    }
+
     // --- Flight Search ---
     function fetchFlights(lat, lon, zip) {
         showLoading();
@@ -209,7 +250,7 @@
         hideError();
 
         var radius = radiusSelect.value;
-        var url = "/api/flights?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
+        var url = "/api/flights?lat=" + lat + "&lon=" + lon + "&radius=" + radius + "&window=" + encodeURIComponent(currentTimeWindow);
         if (zip) url += "&zip=" + encodeURIComponent(zip);
 
         fetch(url)
@@ -219,6 +260,13 @@
             })
             .then(function (data) {
                 hideLoading();
+                activeQuery = data.query || null;
+                applyQueryState(activeQuery);
+
+                if (window.OverflightMap) {
+                    window.OverflightMap.onSearchComplete(currentLat, currentLon, parseFloat(radius), data.query);
+                }
+
                 if (data.flights && data.flights.length > 0) {
                     renderResults(data);
                 } else {
@@ -236,8 +284,9 @@
         var flights = data.flights;
         var count = data.count;
         var radius = data.query.radius_miles;
+        var windowLabel = data.query.window_label || defaultWindowLabel(currentTimeWindow);
 
-        resultsTitle.textContent = count + " aircraft" + (count !== 1 ? "" : "") + " in the past 24 hours";
+        resultsTitle.textContent = count + " aircraft in " + windowLabel;
         resultsSubtitle.textContent = "Within " + radius + " miles of your location";
 
         flightList.innerHTML = "";
@@ -248,16 +297,13 @@
         });
 
         resultsSection.style.display = "block";
-
-        // Notify map module that search is complete so it can center and render this area.
-        if (window.OverflightMap) {
-            window.OverflightMap.onSearchComplete(currentLat, currentLon, radius);
-        }
     }
 
     function createFlightCard(flight) {
         var card = document.createElement("div");
         card.className = "flight-card";
+        card.dataset.icao24 = flight.icao24 || "";
+        card.dataset.timestamp = String(flight.timestamp || "");
 
         // Determine display name
         var title = flight.manufacturer && flight.model
@@ -282,7 +328,10 @@
                     '<div class="flight-card-title">' + escapeHtml(title) + '</div>' +
                     (operator ? '<div style="font-size:0.85rem;color:var(--color-text-secondary)">' + escapeHtml(operator) + '</div>' : '') +
                 '</div>' +
-                '<div class="flight-card-time">' + escapeHtml(timeStr) + '</div>' +
+                '<div class="flight-card-actions">' +
+                    '<button class="show-on-map-btn" type="button">Show on map</button>' +
+                    '<div class="flight-card-time">' + escapeHtml(timeStr) + '</div>' +
+                '</div>' +
             '</div>' +
             '<div class="flight-card-summary">' +
                 tags.map(function (t) { return '<span class="tag">' + t + '</span>'; }).join("") +
@@ -309,8 +358,27 @@
             '</div>';
 
         card.addEventListener("click", function () {
+            if (window.OverflightMap && typeof window.OverflightMap.pausePlayback === "function") {
+                window.OverflightMap.pausePlayback();
+            }
             card.classList.toggle("expanded");
         });
+
+        var showOnMapBtn = card.querySelector(".show-on-map-btn");
+        if (showOnMapBtn) {
+            showOnMapBtn.addEventListener("click", function (evt) {
+                evt.preventDefault();
+                evt.stopPropagation();
+                if (window.OverflightMap && typeof window.OverflightMap.focusFlight === "function") {
+                    window.OverflightMap.focusFlight({
+                        icao24: flight.icao24,
+                        timestamp: flight.timestamp,
+                        lat: flight.latitude,
+                        lon: flight.longitude
+                    });
+                }
+            });
+        }
 
         return card;
     }
@@ -354,6 +422,10 @@
     }
 
     function showNoResults() {
+        if (noResultsHeading) noResultsHeading.textContent = "No aircraft found";
+        if (noResultsBody) {
+            noResultsBody.textContent = "No aircraft were detected within your selected radius during " + currentWindowLabel.toLowerCase() + ".";
+        }
         noResults.style.display = "block";
     }
 
@@ -385,11 +457,77 @@
         return Number.isFinite(n) ? n : null;
     }
 
+    function syncTimeFilterButtons() {
+        timeFilterButtons.forEach(function (btn) {
+            btn.classList.toggle("time-filter-btn-active", btn.getAttribute("data-window") === currentTimeWindow);
+        });
+    }
+
+    function applyQueryState(query) {
+        if (!query) return;
+        currentWindowLabel = query.window_label || currentWindowLabel;
+        currentTimeWindow = query.window || currentTimeWindow;
+        syncTimeFilterButtons();
+    }
+
+    function focusFlightByIcao(icao24, options) {
+        if (!icao24 || !flightList) return false;
+        var selector = '.flight-card[data-icao24="' + cssEscape(icao24) + '"]';
+        var card = flightList.querySelector(selector);
+        if (!card) return false;
+
+        if (!card.classList.contains("expanded") || (options && options.expand)) {
+            card.classList.add("expanded");
+        }
+
+        card.classList.add("flight-card-focused");
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        window.setTimeout(function () {
+            card.classList.remove("flight-card-focused");
+        }, 1800);
+        return true;
+    }
+
+    function cssEscape(value) {
+        if (window.CSS && typeof window.CSS.escape === "function") {
+            return window.CSS.escape(value);
+        }
+        return String(value).replace(/(["\\])/g, "\\$1");
+    }
+
+    function defaultWindowLabel(windowKey) {
+        switch (windowKey) {
+            case "last_hour":
+                return "Last hour";
+            case "today":
+                return "Today";
+            case "yesterday":
+                return "Yesterday";
+            default:
+                return "Last " + (window.OVERFLIGHT.searchDefaultWindowHours || 24) + " hours";
+        }
+    }
+
     function escapeHtml(str) {
         var div = document.createElement("div");
         div.textContent = str;
         return div.innerHTML;
     }
+
+    window.OverflightApp = {
+        setTimeWindow: setTimeWindow,
+        focusFlightByIcao: focusFlightByIcao,
+        getSearchState: function () {
+            return {
+                lat: currentLat,
+                lon: currentLon,
+                radius: parseFloat(radiusSelect.value),
+                window: currentTimeWindow,
+                windowLabel: currentWindowLabel,
+                query: activeQuery
+            };
+        }
+    };
 
     // --- Start ---
     if (document.readyState === "loading") {

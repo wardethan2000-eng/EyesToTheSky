@@ -19,20 +19,35 @@
     var selectedAircraft = null;
     var iconImagesLoaded = {};
     var playbackBound = false;
+    var aircraftFirstSeen = {};
+    var FADE_IN_MS = 1200;
+
+    // SVG icons for the play/pause button — render crisply at any DPI.
+    var ICON_PLAY  = '<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><path d="M0 0L12 7L0 14Z"/></svg>';
+    var ICON_PAUSE = '<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><rect x="0" y="0" width="4" height="14" rx="1.5"/><rect x="8" y="0" width="4" height="14" rx="1.5"/></svg>';
 
     // DOM references (resolved on init)
     var mapSection, mapEl, mapLoading, mapLoadingText;
     var mapWarning;
     var aircraftCounter, aircraftCounterText;
     var playbackControls, playPauseBtn, scrubber, timeLabel;
-    var speedSelect, altitudeSelect, settingsToggle;
+    var speedSelect, speedNote, altitudeSelect, settingsToggle;
     var detailSidebar, detailClose, detailContent, detailDragHandle;
     var flightList;
+    var dayToggle, dayBtnYesterday, dayBtnToday;
+    var pendingFocusFlight = null;
+    var lastSpeedWindowSignature = "";
 
     // Current search params
     var searchLat = null;
     var searchLon = null;
     var searchRadius = null;
+    var searchDateLabel = ""; // Displayed in the map chip
+    var selectedWindowKey = "yesterday";
+    var selectedWindowLabel = "Yesterday";
+    var selectedWindowStart = null;
+    var selectedWindowEnd = null;
+    var selectedDay = (window.OVERFLIGHT.yesterdayIso || window.OVERFLIGHT.playbackDay || "").trim();
 
     var DEFAULT_US_VIEW = {
         lat: 39.8283,
@@ -57,6 +72,7 @@
         scrubber = document.getElementById("playback-scrubber");
         timeLabel = document.getElementById("playback-time-label");
         speedSelect = document.getElementById("playback-speed");
+        speedNote = document.getElementById("playback-speed-note");
         altitudeSelect = document.getElementById("altitude-filter");
         settingsToggle = document.getElementById("playback-settings-toggle");
         detailSidebar = document.getElementById("detail-sidebar");
@@ -64,6 +80,123 @@
         detailContent = document.getElementById("detail-content");
         detailDragHandle = document.getElementById("detail-drag-handle");
         flightList = document.getElementById("flight-list");
+        dayToggle = document.getElementById("day-toggle");
+        dayBtnYesterday = document.getElementById("day-btn-yesterday");
+        dayBtnToday = document.getElementById("day-btn-today");
+
+        // Day toggle click handlers.
+        if (dayBtnYesterday) {
+            dayBtnYesterday.onclick = function () {
+                if (window.OverflightApp && typeof window.OverflightApp.setTimeWindow === "function") {
+                    window.OverflightApp.setTimeWindow("yesterday");
+                }
+            };
+        }
+        if (dayBtnToday) {
+            dayBtnToday.onclick = function () {
+                if (window.OverflightApp && typeof window.OverflightApp.setTimeWindow === "function") {
+                    window.OverflightApp.setTimeWindow("today");
+                }
+            };
+        }
+
+        // Derive initial date label from selectedDay.
+        syncTimeWindowPresentation();
+    }
+
+    function setDayToggleActive(which) {
+        if (!dayBtnYesterday || !dayBtnToday) return;
+        dayBtnYesterday.classList.toggle("day-btn-active", which === "yesterday");
+        dayBtnToday.classList.toggle("day-btn-active", which === "today");
+    }
+
+    function syncTimeWindowPresentation() {
+        if (selectedWindowKey === "today") {
+            selectedDay = window.OVERFLIGHT.todayIso || "";
+            setDayToggleActive("today");
+        } else if (selectedWindowKey === "yesterday") {
+            selectedDay = window.OVERFLIGHT.yesterdayIso || "";
+            setDayToggleActive("yesterday");
+        } else {
+            selectedDay = "";
+            if (dayBtnYesterday) dayBtnYesterday.classList.remove("day-btn-active");
+            if (dayBtnToday) dayBtnToday.classList.remove("day-btn-active");
+        }
+
+        searchDateLabel = selectedWindowLabel || "Area overview";
+    }
+
+    function setTimeWindowFromQuery(query) {
+        if (!query) return;
+        var nextKey = query.window || selectedWindowKey;
+        var nextStart = (query.start != null) ? query.start : selectedWindowStart;
+        var nextEnd = (query.end != null) ? query.end : selectedWindowEnd;
+        var nextSignature = [nextKey, nextStart, nextEnd].join(":");
+
+        selectedWindowKey = query.window || selectedWindowKey;
+        selectedWindowLabel = query.window_label || selectedWindowLabel;
+        selectedWindowStart = (query.start != null) ? query.start : selectedWindowStart;
+        selectedWindowEnd = (query.end != null) ? query.end : selectedWindowEnd;
+        syncTimeWindowPresentation();
+
+        if (nextSignature !== lastSpeedWindowSignature) {
+            applyRecommendedSpeedForWindow();
+            lastSpeedWindowSignature = nextSignature;
+        }
+    }
+
+    function getRecommendedSpeedForWindow() {
+        var duration = 0;
+        if (selectedWindowStart != null && selectedWindowEnd != null && selectedWindowEnd > selectedWindowStart) {
+            duration = selectedWindowEnd - selectedWindowStart;
+        }
+
+        if (selectedWindowKey === "last_hour") return 60;
+        if (selectedWindowKey === "today") {
+            if (duration <= 6 * 3600) return 60;
+            if (duration <= 12 * 3600) return 120;
+            return 240;
+        }
+        if (selectedWindowKey === "yesterday" || selectedWindowKey === "last_24_hours") {
+            return 480;
+        }
+        if (duration <= 3600) return 60;
+        if (duration <= 6 * 3600) return 120;
+        if (duration <= 12 * 3600) return 240;
+        if (duration <= 24 * 3600) return 480;
+        return 960;
+    }
+
+    function applyRecommendedSpeedForWindow() {
+        if (!speedSelect) return;
+        var recommended = String(getRecommendedSpeedForWindow());
+        var optionExists = false;
+        for (var i = 0; i < speedSelect.options.length; i++) {
+            if (speedSelect.options[i].value === recommended) {
+                optionExists = true;
+                break;
+            }
+        }
+        if (!optionExists) return;
+
+        speedSelect.value = recommended;
+        if (window.OverflightPlayback && typeof window.OverflightPlayback.setSpeed === "function") {
+            window.OverflightPlayback.setSpeed(parseFloat(recommended));
+        }
+        updateSpeedRecommendationNote();
+    }
+
+    function updateSpeedRecommendationNote() {
+        if (!speedSelect || !speedNote) return;
+        var recommended = String(getRecommendedSpeedForWindow());
+        var selected = String(speedSelect.value || "");
+        if (selected === recommended) {
+            speedNote.textContent = "Recommended";
+            speedNote.classList.remove("playback-speed-note-muted");
+        } else {
+            speedNote.textContent = "Suggested " + recommended + "x";
+            speedNote.classList.add("playback-speed-note-muted");
+        }
     }
 
     function initOverview(opts) {
@@ -93,16 +226,19 @@
      * Called by app.js after a successful flight search.
      * Stores search params, recenters map, and starts playback.
      */
-    function onSearchComplete(lat, lon, radius) {
+    function onSearchComplete(lat, lon, radius, query) {
         initDOM();
         searchLat = lat;
         searchLon = lon;
         searchRadius = radius;
+        setTimeWindowFromQuery(query);
 
         ensureMap(lat, lon, getZoomForRadius(radius));
         onMapReady(function () {
             centerMap(lat, lon, getZoomForRadius(radius));
             drawSearchRadius();
+            // Show the day toggle once the user has an active search area.
+            if (dayToggle) dayToggle.style.display = "flex";
             startPlayback();
         });
     }
@@ -315,17 +451,20 @@
                     "*",
                     [
                         "interpolate", ["linear"], ["get", "sizeMult"],
-                        0.3, 0.58,
-                        0.5, 0.68,
-                        0.75, 0.82,
-                        1.0, 0.96
+                        0.3, 0.62,
+                        0.5, 0.74,
+                        0.75, 0.88,
+                        1.0, 1.0
                     ],
-                    ["case", ["==", ["get", "selected"], true], 1.12, 1.0]
+                    ["case", ["==", ["get", "selected"], true], 1.2, 1.0]
                 ],
                 "icon-rotate": ["get", "heading"],
                 "icon-rotation-alignment": "map",
                 "icon-allow-overlap": true,
                 "icon-ignore-placement": true
+            },
+            paint: {
+                "icon-opacity": ["get", "opacity"]
             }
         });
 
@@ -347,7 +486,8 @@
             paint: {
                 "text-color": "#333",
                 "text-halo-color": "#fff",
-                "text-halo-width": 1
+                "text-halo-width": 1,
+                "text-opacity": ["get", "opacity"]
             }
         });
 
@@ -372,9 +512,8 @@
     }
 
     function createAircraftMarkerImages() {
-        addAircraftMarkerImage(AIRCRAFT_ICON_ID, "#1f7ae0", "#0e3a6d", 78);
-        addAircraftMarkerImage(AIRCRAFT_ICON_SELECTED_ID, "#e8391a", "#ffffff", 84);
-        loadAircraftSpriteImage();
+        addAircraftMarkerImage(AIRCRAFT_ICON_ID, "#2b8cef", "#0b4a8a", 64);
+        addAircraftMarkerImage(AIRCRAFT_ICON_SELECTED_ID, "#ff5733", "#ffffff", 72);
     }
 
     function loadAircraftSpriteImage() {
@@ -412,7 +551,7 @@
     }
 
     function addAircraftMarkerImage(name, fillColor, strokeColor, size) {
-        size = size || 48;
+        size = size || 64;
         var canvas = document.createElement("canvas");
         canvas.width = size;
         canvas.height = size;
@@ -422,31 +561,49 @@
         var cy = size / 2;
         ctx.translate(cx, cy);
 
-        // Simple airplane fallback silhouette pointing up.
+        // Scale factor so the silhouette fills the canvas regardless of size.
+        var s = size / 64;
+
+        // Drop shadow for depth
+        ctx.shadowColor = "rgba(0, 0, 0, 0.40)";
+        ctx.shadowBlur = 4 * s;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 1.5 * s;
+
+        // Top-down aircraft silhouette — nose points up (negative y).
+        // Shape mirrors the proportions used by the existing SVG assets.
         ctx.beginPath();
-        ctx.moveTo(0, -28);
-        ctx.lineTo(4, -11);
-        ctx.lineTo(16, -8);
-        ctx.lineTo(15, -2);
-        ctx.lineTo(4, -2);
-        ctx.lineTo(4, 14);
-        ctx.lineTo(10, 19);
-        ctx.lineTo(9, 23);
-        ctx.lineTo(0, 18);
-        ctx.lineTo(-9, 23);
-        ctx.lineTo(-10, 19);
-        ctx.lineTo(-4, 14);
-        ctx.lineTo(-4, -2);
-        ctx.lineTo(-15, -2);
-        ctx.lineTo(-16, -8);
-        ctx.lineTo(-4, -11);
+        ctx.moveTo(0, -22 * s);           // Nose tip
+        ctx.lineTo(2.5 * s, -8 * s);      // Right fuselage shoulder
+        ctx.lineTo(18 * s, -2 * s);        // Right main wing leading edge
+        ctx.lineTo(17 * s, 2 * s);         // Right wingtip
+        ctx.lineTo(3 * s, -1 * s);         // Right wing root trailing
+        ctx.lineTo(3 * s, 13 * s);         // Right fuselage, tail section
+        ctx.lineTo(11 * s, 17 * s);        // Right horizontal stabiliser leading
+        ctx.lineTo(10 * s, 21 * s);        // Right stabiliser tip
+        ctx.lineTo(0, 19 * s);             // Tail centreline
+        ctx.lineTo(-10 * s, 21 * s);       // Left stabiliser tip
+        ctx.lineTo(-11 * s, 17 * s);       // Left horizontal stabiliser leading
+        ctx.lineTo(-3 * s, 13 * s);        // Left fuselage, tail section
+        ctx.lineTo(-3 * s, -1 * s);        // Left wing root trailing
+        ctx.lineTo(-17 * s, 2 * s);        // Left wingtip
+        ctx.lineTo(-18 * s, -2 * s);       // Left main wing leading edge
+        ctx.lineTo(-2.5 * s, -8 * s);      // Left fuselage shoulder
         ctx.closePath();
 
         ctx.fillStyle = fillColor;
         ctx.fill();
-        ctx.lineWidth = 1.5;
+
+        ctx.shadowColor = "transparent";
+        ctx.lineWidth = 1.8 * s;
         ctx.strokeStyle = strokeColor;
         ctx.stroke();
+
+        // Cockpit window highlight — small oval just behind the nose.
+        ctx.beginPath();
+        ctx.ellipse(0, -11 * s, 1.8 * s, 2.5 * s, 0, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.70)";
+        ctx.fill();
 
         upsertMapImage(name, {
             width: size,
@@ -509,11 +666,18 @@
         }
 
         // Build GeoJSON for detailed aircraft
+        var now = performance.now();
         var detailedFeatures = detailed.map(function (ac) {
             var iconInfo = window.OverflightIcons.getAircraftIcon({
                 model: null,
                 operator: null
             });
+
+            if (!aircraftFirstSeen[ac.id]) {
+                aircraftFirstSeen[ac.id] = now;
+            }
+            var elapsed = now - aircraftFirstSeen[ac.id];
+            var opacity = Math.min(1.0, elapsed / FADE_IN_MS);
 
             return {
                 type: "Feature",
@@ -530,7 +694,8 @@
                     heading: ac.heading || 0,
                     sizeMult: iconInfo.size,
                     category: iconInfo.category,
-                    selected: selectedAircraft && selectedAircraft.icao24 === ac.icao24
+                    selected: !!(selectedAircraft && selectedAircraft.icao24 === ac.icao24),
+                    opacity: opacity
                 }
             };
         });
@@ -583,11 +748,7 @@
         // Update counter
         if (totalCount > 0) {
             aircraftCounter.style.display = "block";
-            var msg = totalCount + " aircraft";
-            if (dots.length > 0) {
-                msg = "Showing " + detailed.length + " of " + totalCount + " aircraft. Zoom in or increase altitude filter to see details.";
-            }
-            aircraftCounterText.textContent = msg;
+            aircraftCounterText.textContent = totalCount + " aircraft";
         } else {
             aircraftCounter.style.display = "none";
         }
@@ -601,7 +762,7 @@
 
         playPauseBtn.onclick = function () {
             var playing = window.OverflightPlayback.togglePlayPause();
-            playPauseBtn.innerHTML = playing ? "&#9646;&#9646;" : "&#9654;";
+            playPauseBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
         };
 
         scrubber.oninput = function () {
@@ -611,6 +772,7 @@
 
         speedSelect.onchange = function () {
             window.OverflightPlayback.setSpeed(parseFloat(speedSelect.value));
+            updateSpeedRecommendationNote();
         };
 
         altitudeSelect.onchange = function () {
@@ -623,6 +785,8 @@
                 playbackControls.classList.toggle("show-settings");
             };
         }
+
+        updateSpeedRecommendationNote();
 
         [playbackControls, scrubber, speedSelect, altitudeSelect].forEach(function (el) {
             if (!el) return;
@@ -656,10 +820,17 @@
     function startPlayback() {
         if (searchLat == null || searchLon == null || searchRadius == null) return;
 
+        var playbackDay = selectedWindowKey === "yesterday" ? selectedDay : "";
+        var playbackStartTime = selectedWindowKey === "yesterday" ? null : selectedWindowStart;
+        var playbackEndTime = selectedWindowKey === "yesterday" ? null : selectedWindowEnd;
+
         mapLoading.style.display = "flex";
         if (mapWarning) mapWarning.style.display = "none";
 
         window.OverflightPlayback.init(searchLat, searchLon, searchRadius, {
+            day: playbackDay,
+            startTime: playbackStartTime,
+            endTime: playbackEndTime,
             onAircraftUpdate: function (detailed, dots, totalCount, trails) {
                 updateAircraftOnMap(detailed, dots, totalCount, trails);
             },
@@ -684,7 +855,13 @@
                     showMapWarning(status.message || "Playback data is temporarily unavailable.");
                 }
             },
+            onPlaybackStateChange: function (playing) {
+                playPauseBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+            },
             onReady: function (state) {
+                // Reset fade-in tracking for the new playback session
+                aircraftFirstSeen = {};
+
                 if (state && (state.empty || state.error)) {
                     playbackControls.style.display = "none";
                     mapLoading.style.display = "flex";
@@ -705,6 +882,7 @@
                     mapLoading.style.display = "none";
                     playbackControls.style.display = "none";
                     showMapWarning("Showing latest position snapshots. Animated playback will appear as track history fills in.");
+                    maybeApplyPendingFocus();
                     return;
                 }
 
@@ -713,10 +891,19 @@
                 mapLoading.style.display = "none";
                 playbackControls.style.display = "flex";
 
+                // Update the map chip to show the date being replayed.
+                var chip = document.getElementById("map-chip");
+                if (chip) {
+                    chip.textContent = searchDateLabel
+                        ? (searchDateLabel + " replay")
+                        : "Area replay";
+                }
+
                 // Start playback automatically so aircraft motion is visible
                 // without requiring an extra click after switching to map view.
                 window.OverflightPlayback.play();
-                playPauseBtn.innerHTML = "&#9646;&#9646;";
+                playPauseBtn.innerHTML = ICON_PAUSE;
+                maybeApplyPendingFocus();
             }
         });
     }
@@ -749,10 +936,18 @@
         var icao24 = properties.icao24;
         if (!icao24) return;
 
+        if (window.OverflightPlayback && typeof window.OverflightPlayback.pause === "function") {
+            window.OverflightPlayback.pause();
+        }
+
         selectedAircraft = { icao24: icao24 };
 
         // Show track line for this aircraft (find in allTracks)
         drawSelectedTrack(icao24);
+        if (window.OverflightPlayback && typeof window.OverflightPlayback.seekToTime === "function") {
+            var playbackState = window.OverflightPlayback.getState();
+            window.OverflightPlayback.seekToTime(playbackState.playbackTime);
+        }
 
         // Open sidebar with loading state
         detailContent.innerHTML =
@@ -778,6 +973,50 @@
         detailClose.onclick = function () {
             hideDetailSidebar();
         };
+
+        if (window.OverflightApp && typeof window.OverflightApp.focusFlightByIcao === "function") {
+            window.OverflightApp.focusFlightByIcao(icao24, { expand: true, source: "map" });
+        }
+    }
+
+    function focusFlight(flight) {
+        if (!flight || !flight.icao24) return;
+
+        if (window.OverflightPlayback && typeof window.OverflightPlayback.pause === "function") {
+            window.OverflightPlayback.pause();
+        }
+
+        pendingFocusFlight = flight;
+        showMapView();
+
+        if (typeof flight.lat === "number" && typeof flight.lon === "number") {
+            centerMap(flight.lat, flight.lon, Math.max(getZoomForRadius(searchRadius || 25), 10));
+        }
+
+        maybeApplyPendingFocus();
+    }
+
+    function maybeApplyPendingFocus() {
+        if (!pendingFocusFlight || !window.OverflightPlayback) return;
+        var state = window.OverflightPlayback.getState();
+        if (!state || !state.plan) return;
+
+        var focus = pendingFocusFlight;
+        var targetTime = focus.timestamp != null ? focus.timestamp : state.playbackTime;
+
+        window.OverflightPlayback.seekToTime(targetTime, function (ok) {
+            if (!ok) return;
+
+            selectedAircraft = { icao24: focus.icao24 };
+            drawSelectedTrack(focus.icao24);
+            window.OverflightPlayback.seekToTime(targetTime);
+
+            if (typeof focus.lat === "number" && typeof focus.lon === "number") {
+                centerMap(focus.lat, focus.lon, Math.max(getZoomForRadius(searchRadius || 25), 10));
+            }
+
+            pendingFocusFlight = null;
+        });
     }
 
     function drawSelectedTrack(icao24) {
@@ -929,6 +1168,12 @@
         initOverview: initOverview,
         onSearchComplete: onSearchComplete,
         showMapView: showMapView,
-        showCardView: showCardView
+        showCardView: showCardView,
+        focusFlight: focusFlight,
+        pausePlayback: function () {
+            if (window.OverflightPlayback && typeof window.OverflightPlayback.pause === "function") {
+                window.OverflightPlayback.pause();
+            }
+        }
     };
 })();

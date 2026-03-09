@@ -24,12 +24,13 @@ OPENSKY_PASSWORD = os.environ.get("OPENSKY_PASSWORD", "")
 POLL_INTERVAL_SECONDS = int(os.environ.get("OVERFLIGHT_POLL_INTERVAL", "10"))
 
 # --- Data Retention ---
-RETENTION_HOURS = int(os.environ.get("OVERFLIGHT_RETENTION_HOURS", "24"))
+RETENTION_HOURS = int(os.environ.get("OVERFLIGHT_RETENTION_HOURS", "48"))
 CLEANUP_INTERVAL_MINUTES = int(os.environ.get("OVERFLIGHT_CLEANUP_INTERVAL", "60"))
 
 # --- Query Defaults ---
 DEFAULT_RADIUS_MILES = float(os.environ.get("OVERFLIGHT_DEFAULT_RADIUS", "10"))
 MAX_RADIUS_MILES = float(os.environ.get("OVERFLIGHT_MAX_RADIUS", "50"))
+SEARCH_DEFAULT_WINDOW_HOURS = int(os.environ.get("OVERFLIGHT_SEARCH_WINDOW_HOURS", "24"))
 
 # --- Ingestion Bounding Box (optional CONUS filter) ---
 # Set to None to ingest global data; set coordinates to filter
@@ -49,8 +50,9 @@ SIMPLIFICATION_EPSILON = float(os.environ.get("OVERFLIGHT_SIMPLIFY_EPSILON", "0.
 TRACK_BUILD_INTERVAL_SECONDS = int(os.environ.get("OVERFLIGHT_TRACK_BUILD_INTERVAL", "60"))
 
 # --- Playback ---
-PLAYBACK_SPEED_RATIO = float(os.environ.get("OVERFLIGHT_PLAYBACK_SPEED", "240"))
-# 240 = 24 hours / 6 minutes
+PLAYBACK_DEFAULT_WINDOW_HOURS = int(os.environ.get("OVERFLIGHT_PLAYBACK_WINDOW_HOURS", "24"))
+PLAYBACK_SPEED_RATIO = float(os.environ.get("OVERFLIGHT_PLAYBACK_SPEED", "1"))
+# 1 = real-time playback. Higher values intentionally accelerate playback.
 RENDER_BUDGET_MAX = int(os.environ.get("OVERFLIGHT_RENDER_BUDGET", "260"))
 PLAYBACK_TARGET_FPS = int(os.environ.get("OVERFLIGHT_PLAYBACK_TARGET_FPS", "30"))
 PLAYBACK_CHUNK_RETRY_MAX = int(os.environ.get("OVERFLIGHT_CHUNK_RETRY_MAX", "3"))

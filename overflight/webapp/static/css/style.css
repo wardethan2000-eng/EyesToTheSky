@@ -211,6 +211,69 @@ a {
     margin-top: 0.8rem;
 }
 
+.time-filter-group {
+    margin-top: 0.8rem;
+}
+
+.time-filter-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.38rem;
+}
+
+.time-filter-head label {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.time-filter-note {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.time-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+}
+
+.time-filter-btn {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.85);
+    color: var(--text-main);
+    font: inherit;
+    font-size: 0.83rem;
+    font-weight: 700;
+    padding: 0.54rem 0.72rem;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, transform 100ms ease, box-shadow 120ms ease;
+}
+
+.time-filter-btn:hover {
+    border-color: #9fc1e5;
+    background: #f5faff;
+}
+
+.time-filter-btn:active {
+    transform: translateY(1px);
+}
+
+.time-filter-btn-active {
+    background: linear-gradient(160deg, var(--brand), var(--brand-dark));
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 8px 18px rgba(15, 114, 207, 0.22);
+}
+
 .location-info,
 .error-msg {
     margin-top: 0.65rem;
@@ -285,10 +348,45 @@ a {
     box-shadow: 0 10px 24px rgba(17, 46, 77, 0.12);
 }
 
+.flight-card-focused {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 4px rgba(15, 114, 207, 0.12), 0 14px 28px rgba(17, 46, 77, 0.18);
+}
+
 .flight-card-header {
     display: flex;
     justify-content: space-between;
     gap: 0.6rem;
+}
+
+.flight-card-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.38rem;
+}
+
+.show-on-map-btn {
+    border: 1px solid #b8d0e6;
+    border-radius: 999px;
+    background: #f5faff;
+    color: var(--brand-dark);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    padding: 0.24rem 0.58rem;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease, transform 100ms ease;
+}
+
+.show-on-map-btn:hover {
+    border-color: #7eadd9;
+    background: #eaf4ff;
+}
+
+.show-on-map-btn:active {
+    transform: translateY(1px);
 }
 
 .flight-card-callsign {
@@ -430,6 +528,44 @@ a {
     padding: 0.36rem 0.7rem;
 }
 
+.day-toggle {
+    pointer-events: auto;
+    display: flex;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: rgba(14, 32, 53, 0.72);
+    backdrop-filter: blur(6px);
+    overflow: hidden;
+    gap: 0;
+}
+
+.day-btn {
+    border: none;
+    background: transparent;
+    color: rgba(200, 220, 255, 0.65);
+    font: inherit;
+    font-size: 0.73rem;
+    font-weight: 600;
+    padding: 0.3rem 0.75rem;
+    cursor: pointer;
+    transition: background 140ms, color 140ms;
+    white-space: nowrap;
+}
+
+.day-btn:hover {
+    color: #f2f8ff;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.day-btn-active {
+    background: rgba(31, 122, 224, 0.72);
+    color: #fff;
+}
+
+.day-btn + .day-btn {
+    border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
+
 .map-loading {
     position: absolute;
     inset: 0;
@@ -480,11 +616,16 @@ a {
 }
 
 .playback-btn {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
-    background: linear-gradient(160deg, #1f966a, #15714f);
+    background: rgba(255, 255, 255, 0.18);
+    border: 1.5px solid rgba(255, 255, 255, 0.35) !important;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
 }
 
 .playback-timeline {
@@ -550,6 +691,28 @@ a {
     background: rgba(245, 251, 255, 0.94);
     font-size: 0.74rem;
     padding: 0.35rem 0.43rem;
+}
+
+.playback-speed-note {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 92px;
+    padding: 0.4rem 0.62rem;
+    border-radius: 999px;
+    background: rgba(15, 114, 207, 0.12);
+    border: 1px solid rgba(15, 114, 207, 0.22);
+    color: var(--brand-dark);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.playback-speed-note-muted {
+    background: rgba(16, 36, 58, 0.08);
+    border-color: rgba(16, 36, 58, 0.12);
+    color: var(--text-muted);
 }
 
 .detail-sidebar {

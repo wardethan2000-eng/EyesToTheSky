@@ -58,6 +58,19 @@
                     </select>
                 </div>
 
+                <div class="time-filter-group">
+                    <div class="time-filter-head">
+                        <label>Cards Time Range</label>
+                        <span class="time-filter-note">UTC</span>
+                    </div>
+                    <div class="time-filter-grid" id="time-filter-grid">
+                        <button class="time-filter-btn" type="button" data-window="last_hour">Last hour</button>
+                        <button class="time-filter-btn" type="button" data-window="today">Today</button>
+                        <button class="time-filter-btn" type="button" data-window="yesterday">Yesterday</button>
+                        <button class="time-filter-btn time-filter-btn-active" type="button" data-window="last_24_hours">Last 24 hours</button>
+                    </div>
+                </div>
+
                 <div id="location-info" class="location-info" style="display:none;">
                     <span id="location-text"></span>
                 </div>
@@ -93,7 +106,11 @@
                 <div id="map" class="map"></div>
 
                 <div class="map-top-bar">
-                    <div class="map-chip">Live area overview</div>
+                    <div class="map-chip" id="map-chip">Area overview</div>
+                    <div id="day-toggle" class="day-toggle" style="display:none;">
+                        <button id="day-btn-yesterday" class="day-btn day-btn-active" type="button">Yesterday</button>
+                        <button id="day-btn-today" class="day-btn" type="button">Today</button>
+                    </div>
                     <div id="aircraft-counter" class="aircraft-counter" style="display:none;">
                         <span id="aircraft-counter-text"></span>
                     </div>
@@ -107,7 +124,7 @@
                 <div id="map-warning" class="map-warning" style="display:none;"></div>
 
                 <div id="playback-controls" class="playback-controls" style="display:none;">
-                    <button id="playback-play-pause" class="playback-btn" title="Play/Pause">&#9654;</button>
+                    <button id="playback-play-pause" class="playback-btn" title="Play/Pause"><svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><path d="M0 0L12 7L0 14Z"/></svg></button>
                     <div class="playback-timeline">
                         <input type="range" id="playback-scrubber" min="0" max="1000" value="0" step="1">
                         <span id="playback-time-label" class="playback-time-label">--:--</span>
@@ -117,8 +134,16 @@
                         <select id="playback-speed" class="playback-speed" title="Playback speed">
                             <option value="0.5">0.5x</option>
                             <option value="1" selected>1x</option>
-                            <option value="2">2x</option>
+                            <option value="4">4x</option>
+                            <option value="15">15x</option>
+                            <option value="30">30x</option>
+                            <option value="60">60x</option>
+                            <option value="120">120x</option>
+                            <option value="240">240x</option>
+                            <option value="480">480x</option>
+                            <option value="960">960x</option>
                         </select>
+                        <span id="playback-speed-note" class="playback-speed-note">Recommended</span>
                         <select id="altitude-filter" class="altitude-filter" title="Altitude filter">
                             <option value="0">All altitudes</option>
                             <option value="304.8">Above 1,000 ft</option>
@@ -158,6 +183,9 @@
             savedLon: {{ saved_lon if saved_lon else 'null' }},
             savedZip: "{{ saved_zip }}",
             playbackDay: "{{ playback_day }}",
+            todayIso: "{{ today_iso }}",
+            yesterdayIso: "{{ yesterday_iso }}",
+            searchDefaultWindowHours: {{ config.SEARCH_DEFAULT_WINDOW_HOURS }},
             defaultRadius: {{ default_radius }},
             maxRadius: {{ max_radius }},
             playbackSpeedRatio: {{ config.PLAYBACK_SPEED_RATIO }},

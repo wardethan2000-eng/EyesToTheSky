@@ -11,7 +11,7 @@
 (function () {
     "use strict";
 
-    var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 960;
+    var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 1;
     var RENDER_BUDGET = window.OVERFLIGHT.renderBudgetMax || 150;
     var TARGET_FPS = window.OVERFLIGHT.playbackTargetFps || 30;
     var DEPARTURE_ANIMATION_SECONDS = 30;
@@ -19,8 +19,10 @@
     var CHUNK_FETCH_RETRY_MAX = window.OVERFLIGHT.chunkFetchRetryMax || 3;
     var CHUNK_FETCH_BACKOFF_MS = window.OVERFLIGHT.chunkFetchBackoffMs || 700;
     var CHUNK_FAILURE_COOLDOWN_MS = window.OVERFLIGHT.chunkFailureCooldownMs || 15000;
-    var VISIBILITY_LEAD_SECONDS = 120;
-    var VISIBILITY_LINGER_SECONDS = 900;
+    // Show aircraft approaching from off-screen before track starts, and let them
+    // fly off-screen after their last data point. Both values are in data-time seconds.
+    var VISIBILITY_LEAD_SECONDS = 300;
+    var VISIBILITY_LINGER_SECONDS = 600;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
@@ -46,6 +48,7 @@
     var onPlaybackTimeChange = null; // fn(playbackTime, progress0to1)
     var onLoadingProgress = null; // fn(message)
     var onReady = null;           // fn()
+    var onPlaybackStateChange = null; // fn(playing: bool)
 
     // Map center for distance sorting (set by map.js)
     var mapCenterLat = 0;
@@ -91,8 +94,8 @@
             return dA - dB;
         });
 
-        var detailed = visible.slice(0, currentRenderBudget);
-        var dots = visible.slice(currentRenderBudget);
+        var detailed = visible;
+        var dots = [];
         onAircraftUpdate(detailed, dots, visible.length, []);
     }
 
@@ -102,13 +105,19 @@
      * @param {number} lat
      * @param {number} lon
      * @param {number} radius
-     * @param {Object} callbacks - { onAircraftUpdate, onPlaybackTimeChange, onLoadingProgress, onReady }
+    * @param {Object} callbacks - { onAircraftUpdate, onPlaybackTimeChange, onLoadingProgress, onReady, day, startTime, endTime }
+    *                             callbacks.day overrides the module-level playbackDay when provided.
      */
     function init(lat, lon, radius, callbacks) {
         onAircraftUpdate = callbacks.onAircraftUpdate || function () {};
         onPlaybackTimeChange = callbacks.onPlaybackTimeChange || function () {};
         onLoadingProgress = callbacks.onLoadingProgress || function () {};
         onReady = callbacks.onReady || function () {};
+        onPlaybackStateChange = callbacks.onPlaybackStateChange || function () {};
+        // Allow caller to override the day (e.g. today vs yesterday toggle).
+        var activeDay = (callbacks.day !== undefined) ? callbacks.day : playbackDay;
+        var activeStartTime = callbacks.startTime;
+        var activeEndTime = callbacks.endTime;
         mapCenterLat = lat;
         mapCenterLon = lon;
         searchRadiusMiles = radius;
@@ -125,15 +134,18 @@
 
         emitLoadingProgress("Fetching playback plan...", 0);
 
-        function buildPlanUrl(dayParam) {
+        function buildPlanUrl(dayParam, startParam, endParam) {
             var url = "/api/tracks/plan?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
             if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
             if (dayParam) url += "&day=" + encodeURIComponent(dayParam);
+            if (startParam != null && endParam != null) {
+                url += "&start=" + encodeURIComponent(startParam) + "&end=" + encodeURIComponent(endParam);
+            }
             return url;
         }
 
-        function requestPlan(dayParam, attemptedFallback) {
-            return fetch(buildPlanUrl(dayParam))
+        function requestPlan(dayParam, startParam, endParam) {
+            return fetch(buildPlanUrl(dayParam, startParam, endParam))
                 .then(function (resp) {
                     if (!resp.ok) throw new Error("Failed to fetch plan");
                     return resp.json();
@@ -141,23 +153,24 @@
                 .then(function (data) {
                     var hasNoPlaybackTracks = !data.chunks || data.chunks.length === 0 || (data.total_unique_aircraft || 0) <= 0;
 
-                    if (hasNoPlaybackTracks && dayParam && !attemptedFallback) {
+                    // When a specific day was requested but has no data, surface a
+                    // clear message rather than silently falling back to today's
+                    // incomplete window.  Today's partial snapshot is confusing;
+                    // the user should just wait for a full day to accumulate.
+                    if (hasNoPlaybackTracks && (dayParam || (startParam != null && endParam != null))) {
+                        var dateLabel = dayParam || "the selected time range";
                         onLoadingProgress({
-                            message: "No playback history for " + dayParam + " in this area. Loading latest available timeline...",
-                            percent: 45,
+                            message: "No flight data collected for " + dateLabel + " yet. Let the poller run for a full day and check back.",
+                            percent: 100,
                             warning: true
                         });
-                        return requestPlan("", true);
+                        onAircraftUpdate([], [], 0);
+                        onPlaybackTimeChange(0, 0);
+                        onReady({ empty: true, collecting: true });
+                        return;
                     }
 
                     plan = data;
-
-                    if (attemptedFallback) {
-                        onLoadingProgress({
-                            message: "Using latest available playback window.",
-                            warning: true
-                        });
-                    }
 
                     if (!plan.chunks || plan.chunks.length === 0 || (plan.total_unique_aircraft || 0) <= 0) {
                         var isCollecting = !!plan.is_collecting;
@@ -184,7 +197,7 @@
 
                         var message = isCollecting
                             ? "Collecting flight data - check back in a few minutes." + backfillSuffix
-                            : "No playback traffic found for this area in the last 24 hours." + backfillSuffix;
+                            : "No playback traffic found for this area in the configured playback window." + backfillSuffix;
 
                         onLoadingProgress({
                             message: message,
@@ -206,7 +219,10 @@
                     playbackStart = plan.chunks[0].start;
                     playbackEnd = plan.chunks[plan.chunks.length - 1].end;
                     initialChunkIndex = findInitialChunkIndex(plan);
-                    playbackTime = plan.chunks[initialChunkIndex].start;
+                    // Start 15 % into the first data chunk so many flights are
+                    // already mid-crossing rather than all departing simultaneously.
+                    var initChunk = plan.chunks[initialChunkIndex];
+                    playbackTime = initChunk.start + (initChunk.end - initChunk.start) * 0.15;
 
                     // Load initial chunk (first with data when available), then signal ready.
                     loadChunk(initialChunkIndex, function () {
@@ -233,7 +249,7 @@
                 });
         }
 
-        requestPlan(playbackDay, false)
+        requestPlan(activeDay, activeStartTime, activeEndTime)
             .catch(function () {
                 onLoadingProgress({
                     message: "Failed to load playback data.",
@@ -386,14 +402,17 @@
         isPlaying = true;
         lastFrameTime = performance.now();
         animFrameId = requestAnimationFrame(tick);
+        if (onPlaybackStateChange) onPlaybackStateChange(true);
     }
 
     function pause() {
+        var wasPlaying = isPlaying;
         isPlaying = false;
         if (animFrameId) {
             cancelAnimationFrame(animFrameId);
             animFrameId = null;
         }
+        if (wasPlaying && onPlaybackStateChange) onPlaybackStateChange(false);
     }
 
     function stop() {
@@ -414,7 +433,16 @@
     function seek(progress) {
         // progress is 0..1
         var t = playbackStart + progress * (playbackEnd - playbackStart);
-        playbackTime = Math.max(playbackStart, Math.min(playbackEnd, t));
+        seekToTime(t);
+    }
+
+    function seekToTime(timeSeconds, callback) {
+        if (!plan || !plan.chunks || plan.chunks.length === 0) {
+            if (callback) callback(false);
+            return false;
+        }
+
+        playbackTime = Math.max(playbackStart, Math.min(playbackEnd, timeSeconds));
         var targetChunk = findChunkIndexForTime(playbackTime);
 
         // Large timeline jumps flush older buffer to keep memory bounded.
@@ -423,13 +451,21 @@
         }
         resetInterpolationCaches();
 
-        // Check if we need to load chunks for this position
-        ensureChunksLoaded();
+        function finishSeek() {
+            ensureChunksLoaded();
+            updateVisibleAircraft();
+            var p = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
+            onPlaybackTimeChange(playbackTime, p);
+            if (callback) callback(true);
+        }
 
-        // Update display immediately
-        updateVisibleAircraft();
-        var p = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
-        onPlaybackTimeChange(playbackTime, p);
+        if (targetChunk >= 0) {
+            loadChunk(targetChunk, finishSeek);
+        } else {
+            finishSeek();
+        }
+
+        return true;
     }
 
     function setSpeed(multiplier) {
@@ -475,8 +511,9 @@
         playbackTime += dt * SPEED_RATIO * speedMultiplier;
 
         if (playbackTime >= playbackEnd) {
-            playbackTime = playbackEnd;
-            pause();
+            // Loop smoothly back to the beginning so there is always activity on screen.
+            playbackTime = playbackStart;
+            resetInterpolationCaches();
         }
 
         // Ensure we have the right chunks loaded
@@ -581,11 +618,9 @@
             if (t > (track.end_time + VISIBILITY_LINGER_SECONDS)) continue;
             if (altitudeFilter > 0 && (track.max_altitude || 0) < altitudeFilter) continue;
 
-            var sampleTime = t;
-            if (sampleTime < track.start_time) sampleTime = track.start_time;
-            if (sampleTime > track.end_time) sampleTime = track.end_time;
-
-            var pos = interpolatePosition(track, sampleTime);
+            // Pass the raw playback time — interpolatePosition and getPolylinePositionAtTime
+            // handle extrapolation beyond track boundaries so planes fly smoothly on/off screen.
+            var pos = interpolatePosition(track, t);
             if (pos) {
                 visible.push({
                     id: track.id,
@@ -623,9 +658,8 @@
             return dA - dB;
         });
 
-        // Apply render budget
-        var detailed = visible.slice(0, currentRenderBudget);
-        var dots = visible.slice(currentRenderBudget);
+        var detailed = visible;
+        var dots = [];
 
         onAircraftUpdate(detailed, dots, visible.length, trails);
     }
@@ -743,24 +777,59 @@
         return { lat: lat + dLat, lon: lon + dLon };
     }
 
+    /**
+     * Extrapolate a position along a constant heading from a base point.
+     * dtSeconds > 0 = forward (linger), < 0 = backward (lead approach).
+     */
+    function extrapolateFromEdge(baseLat, baseLon, baseAlt, heading, dtSeconds, poly) {
+        var velocity = 0;
+        if (poly.length >= 2) {
+            var span = poly[poly.length - 1][0] - poly[0][0];
+            if (span > 0) {
+                var dLat = poly[poly.length - 1][1] - poly[0][1];
+                var dLon = poly[poly.length - 1][2] - poly[0][2];
+                velocity = Math.sqrt(dLat * dLat + dLon * dLon) / span;
+                // Cap at ~650 knots equivalent to prevent runaway extrapolation
+                if (velocity > 0.0028) velocity = 0.0028;
+            }
+        }
+        var rad = heading * Math.PI / 180;
+        var dist = velocity * dtSeconds; // negative = move backward along heading
+        var newLat = baseLat + Math.cos(rad) * dist;
+        var cosLat = Math.cos(newLat * Math.PI / 180);
+        if (Math.abs(cosLat) < 1e-6) cosLat = 1e-6;
+        var newLon = baseLon + (Math.sin(rad) * dist) / cosLat;
+        return { lat: newLat, lon: newLon, altitude: baseAlt, heading: heading };
+    }
+
     function getPolylinePositionAtTime(track, t) {
         var poly = track.polyline;
         if (!poly || poly.length === 0) return null;
 
         // Single point
         if (poly.length === 1) {
-            return { lat: poly[0][1], lon: poly[0][2], altitude: poly[0][3], heading: track.avg_heading || 0 };
+            return { lat: poly[0][1], lon: poly[0][2], altitude: poly[0][3] || 0, heading: track.avg_heading || 0 };
         }
 
-        // Before first point
+        // Before first point — extrapolate backward so plane approaches from off-screen.
         if (t <= poly[0][0]) {
-            return { lat: poly[0][1], lon: poly[0][2], altitude: poly[0][3], heading: computeHeading(poly, 0) };
+            return extrapolateFromEdge(
+                poly[0][1], poly[0][2], poly[0][3] || 0,
+                computeHeading(poly, 0),
+                t - poly[0][0],  // negative dt = move opposite to heading
+                poly
+            );
         }
 
-        // After last point
+        // After last point — extrapolate forward so plane flies off-screen.
         if (t >= poly[poly.length - 1][0]) {
             var last = poly.length - 1;
-            return { lat: poly[last][1], lon: poly[last][2], altitude: poly[last][3], heading: computeHeading(poly, last - 1) };
+            return extrapolateFromEdge(
+                poly[last][1], poly[last][2], poly[last][3] || 0,
+                computeHeading(poly, last - 1),
+                t - poly[last][0],  // positive dt = continue along heading
+                poly
+            );
         }
 
         // Use a rolling index cache to avoid scanning from the start each frame.
@@ -841,6 +910,7 @@
         stop: stop,
         togglePlayPause: togglePlayPause,
         seek: seek,
+        seekToTime: seekToTime,
         setSpeed: setSpeed,
         setAltitudeFilter: setAltitudeFilter,
         setRenderBudget: setRenderBudget,

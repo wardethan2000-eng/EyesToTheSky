@@ -54,12 +54,16 @@ def _get_auth():
     return None
 
 
-def fetch_state_vectors(bbox=None):
+def fetch_state_vectors(bbox=None, at_time=None):
     """
-    Fetch current aircraft state vectors from OpenSky API.
+    Fetch aircraft state vectors from OpenSky API.
 
     Args:
         bbox: Optional (min_lat, max_lat, min_lon, max_lon) to filter results.
+        at_time: Optional Unix timestamp to fetch historical positions at that
+                 moment in time.  Requires authenticated credentials.
+                 OpenSky retains historical state data for ~30 days for
+                 registered users.
 
     Returns:
         List of state vector arrays, or empty list on error.
@@ -73,6 +77,8 @@ def fetch_state_vectors(bbox=None):
             "lomin": min_lon,
             "lomax": max_lon,
         }
+    if at_time is not None:
+        params["time"] = int(at_time)
 
     try:
         response = requests.get(
@@ -96,6 +102,27 @@ def fetch_state_vectors(bbox=None):
         logger.warning("Failed to connect to OpenSky API")
         return []
     except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status == 400 and at_time is not None:
+            raise ValueError(
+                "OpenSky rejected the historical states/all request. Standard REST access only supports "
+                "queries up to 1 hour in the past. For a full prior day, capture data live over time or "
+                "use OpenSky's historical interfaces such as Trino."
+            ) from e
+        if status == 401:
+            raise PermissionError(
+                "OpenSky returned 401 Unauthorized. Check that:\n"
+                "  1. OPENSKY_USERNAME is your account USERNAME (not your email address).\n"
+                "     Log in to opensky-network.org and check your profile for the username field.\n"
+                "  2. OPENSKY_PASSWORD is correct.\n"
+                "  3. Historical requests now require valid authenticated API access; OpenSky is migrating to OAuth2 client credentials."
+            ) from e
+        if status == 403:
+            raise PermissionError(
+                "OpenSky returned 403 Forbidden. Check that your OpenSky API access is enabled and that "
+                "you are using currently supported credentials. OpenSky is migrating authenticated REST "
+                "access to OAuth2 client credentials."
+            ) from e
         logger.warning("OpenSky API HTTP error: %s", e)
         return []
     except (ValueError, KeyError) as e:

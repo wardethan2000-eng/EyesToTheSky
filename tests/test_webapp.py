@@ -31,6 +31,7 @@ class WebAppTestCase(unittest.TestCase):
         rows = [
             ("a1b2c3", "UAL100", 40.6413, -73.7781, 10000, 250, 90, 0, 0, now - 3600),
             ("d4e5f6", "DAL200", 40.7589, -73.9851, 8000, 200, 180, -5, 0, now - 1800),
+            ("h1i2j3", "FFT400", 40.7520, -73.9900, 12000, 280, 70, 0, 0, now - 7200),
             ("g7h8i9", "AAL300", 41.8781, -87.6298, 35000, 450, 270, 0, 0, now - 900),
         ]
         insert_state_vectors(flight_conn, rows)
@@ -115,6 +116,24 @@ class TestIndexPage(WebAppTestCase):
         self.assertIn("chunkFetchBackoffMs", html)
         self.assertIn("chunkFailureCooldownMs", html)
 
+    def test_index_contains_expanded_playback_speeds(self):
+        resp = self.client.get("/")
+        html = resp.data.decode()
+        self.assertIn('value="15"', html)
+        self.assertIn('value="60"', html)
+        self.assertIn('value="240"', html)
+        self.assertIn('value="960"', html)
+        self.assertIn('id="playback-speed-note"', html)
+
+    def test_index_contains_card_time_filters(self):
+        resp = self.client.get("/")
+        html = resp.data.decode()
+        self.assertIn("Cards Time Range", html)
+        self.assertIn('data-window="last_hour"', html)
+        self.assertIn('data-window="today"', html)
+        self.assertIn('data-window="yesterday"', html)
+        self.assertIn('data-window="last_24_hours"', html)
+
 
 class TestDevHarness(WebAppTestCase):
     """Test developer playback harness route."""
@@ -169,6 +188,16 @@ class TestFlightsAPI(WebAppTestCase):
         cookie_str = " ".join(set_cookies)
         self.assertIn("overflight_lat=40.758", cookie_str)
         self.assertIn("overflight_zip=10001", cookie_str)
+
+    def test_flights_last_hour_filter(self):
+        resp = self.client.get("/api/flights?lat=40.758&lon=-73.9855&radius=25&window=last_hour")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        icao_set = {f["icao24"] for f in data["flights"]}
+        self.assertIn("d4e5f6", icao_set)
+        self.assertNotIn("h1i2j3", icao_set)
+        self.assertEqual(data["query"]["window"], "last_hour")
+        self.assertEqual(data["query"]["window_label"], "Last hour")
 
 
 class TestResolveZipAPI(WebAppTestCase):

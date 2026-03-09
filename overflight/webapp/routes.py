@@ -21,6 +21,7 @@ from overflight.config import (
     CHUNK_SIZE_MEDIUM_DENSITY_HOURS,
     DEFAULT_RADIUS_MILES,
     MAX_RADIUS_MILES,
+    PLAYBACK_DEFAULT_WINDOW_HOURS,
     PLAYBACK_CHUNK_BACKOFF_MS,
     PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS,
     PLAYBACK_CHUNK_RETRY_MAX,
@@ -28,6 +29,7 @@ from overflight.config import (
     PLAYBACK_TARGET_FPS,
     RENDER_BUDGET_MAX,
     RETENTION_HOURS,
+    SEARCH_DEFAULT_WINDOW_HOURS,
 )
 from overflight.database.queries import enrich_results, find_flights_near
 from overflight.database.schema import init_flight_db, init_tracks_db
@@ -176,6 +178,60 @@ def _default_previous_day_iso():
     return (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
 
 
+def _today_iso():
+    """Return today's UTC date string in YYYY-MM-DD format."""
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _flight_window_from_request(window_key, day_str):
+    """Resolve a card-results time filter into explicit UTC timestamps."""
+    now_dt = datetime.now(timezone.utc)
+    now_ts = int(now_dt.timestamp())
+    today = now_dt.date()
+    yesterday = today - timedelta(days=1)
+
+    presets = {
+        "last_hour": {
+            "start": now_ts - 3600,
+            "end": now_ts,
+            "label": "Last hour",
+            "key": "last_hour",
+        },
+        "last_24_hours": {
+            "start": now_ts - (SEARCH_DEFAULT_WINDOW_HOURS * 3600),
+            "end": now_ts,
+            "label": f"Last {SEARCH_DEFAULT_WINDOW_HOURS} hours",
+            "key": "last_24_hours",
+        },
+        "today": {
+            "start": int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp()),
+            "end": now_ts,
+            "label": "Today",
+            "key": "today",
+        },
+        "yesterday": {
+            "start": int(datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc).timestamp()),
+            "end": int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp()),
+            "label": "Yesterday",
+            "key": "yesterday",
+        },
+    }
+
+    if day_str:
+        day_start = _parse_day_start_utc(day_str)
+        if day_start is not None:
+            day_dt = datetime.fromtimestamp(day_start, tz=timezone.utc)
+            return {
+                "start": day_start,
+                "end": day_start + 86400,
+                "label": day_dt.strftime("%b %d, %Y").replace(" 0", " "),
+                "key": "custom_day",
+                "day": day_str,
+            }
+
+    return presets.get(window_key or "last_24_hours", presets["last_24_hours"])
+
+
 @bp.route("/")
 def index():
     """Render the main page."""
@@ -185,6 +241,9 @@ def index():
     saved_zip = request.cookies.get("overflight_zip", "")
     saved_radius = request.cookies.get("overflight_radius", str(int(DEFAULT_RADIUS_MILES)))
 
+    yesterday = _default_previous_day_iso()
+    today = _today_iso()
+
     return render_template(
         "index.html",
         radius_options=RADIUS_OPTIONS,
@@ -192,9 +251,12 @@ def index():
         saved_lat=saved_lat,
         saved_lon=saved_lon,
         saved_zip=saved_zip,
-        playback_day=_default_previous_day_iso(),
+        playback_day=yesterday,
+        today_iso=today,
+        yesterday_iso=yesterday,
         max_radius=int(MAX_RADIUS_MILES),
         config={
+            "SEARCH_DEFAULT_WINDOW_HOURS": SEARCH_DEFAULT_WINDOW_HOURS,
             "PLAYBACK_SPEED_RATIO": PLAYBACK_SPEED_RATIO,
             "RENDER_BUDGET_MAX": RENDER_BUDGET_MAX,
             "PLAYBACK_TARGET_FPS": PLAYBACK_TARGET_FPS,
@@ -228,6 +290,8 @@ def api_flights():
     lon = request.args.get("lon", type=float)
     radius = request.args.get("radius", default=DEFAULT_RADIUS_MILES, type=float)
     zipcode = request.args.get("zip", "")
+    window_key = request.args.get("window", default="last_24_hours", type=str).strip()
+    day = request.args.get("day", default="", type=str).strip()
 
     if lat is None or lon is None:
         return jsonify({"error": "lat and lon are required"}), 400
@@ -236,22 +300,38 @@ def api_flights():
         return jsonify({"error": "Invalid coordinates"}), 400
 
     radius = min(max(radius, 1), MAX_RADIUS_MILES)
+    flight_window = _flight_window_from_request(window_key, day)
+    can_backfill_live = flight_window["end"] >= int(time.time()) - 900
 
     flight_conn = None
     try:
         flight_conn = get_flight_db()
-        results = find_flights_near(flight_conn, lat, lon, radius_miles=radius)
+        results = find_flights_near(
+            flight_conn,
+            lat,
+            lon,
+            radius_miles=radius,
+            start_time=flight_window["start"],
+            end_time=flight_window["end"],
+        )
 
         # Testing-friendly behavior: when an area is empty, try one quick
         # on-demand area backfill from OpenSky and then re-run the query.
-        if not results:
+        if not results and can_backfill_live:
             _backfill_area_from_opensky(lat, lon, radius)
             try:
                 flight_conn.close()
             except Exception:
                 pass
             flight_conn = get_flight_db()
-            results = find_flights_near(flight_conn, lat, lon, radius_miles=radius)
+            results = find_flights_near(
+                flight_conn,
+                lat,
+                lon,
+                radius_miles=radius,
+                start_time=flight_window["start"],
+                end_time=flight_window["end"],
+            )
     except Exception:
         logger.exception("Flight query failed")
         return jsonify({"error": "Database query failed"}), 500
@@ -277,7 +357,11 @@ def api_flights():
             "lat": lat,
             "lon": lon,
             "radius_miles": radius,
-            "hours": RETENTION_HOURS,
+            "hours": SEARCH_DEFAULT_WINDOW_HOURS,
+            "window": flight_window["key"],
+            "window_label": flight_window["label"],
+            "start": flight_window["start"],
+            "end": flight_window["end"],
         },
     }))
 
@@ -364,7 +448,7 @@ def api_tracks():
                 end = day_start + 86400
         else:
             if start is None:
-                start = now - (RETENTION_HOURS * 3600)
+                start = now - (PLAYBACK_DEFAULT_WINDOW_HOURS * 3600)
             if end is None:
                 end = now
 
@@ -391,7 +475,7 @@ def api_tracks():
         )
 
         # Get total density for 24h window as unique aircraft count.
-        full_start = now - (RETENTION_HOURS * 3600)
+        full_start = now - (PLAYBACK_DEFAULT_WINDOW_HOURS * 3600)
         total_in_area = get_unique_aircraft_count(
             flight_conn,
             lat,
@@ -526,6 +610,8 @@ def api_tracks_plan():
     lon = request.args.get("lon", type=float)
     radius = request.args.get("radius", default=DEFAULT_RADIUS_MILES, type=float)
     day = request.args.get("day", default="", type=str).strip()
+    start = request.args.get("start", type=int)
+    end = request.args.get("end", type=int)
     min_alt = request.args.get("min_alt", default=0, type=float)
 
     if lat is None or lon is None:
@@ -538,19 +624,24 @@ def api_tracks_plan():
 
     now_ts = int(time.time())
     retention_start = now_ts - (RETENTION_HOURS * 3600)
+    default_window_start = now_ts - (PLAYBACK_DEFAULT_WINDOW_HOURS * 3600)
 
     requested_day_start = _parse_day_start_utc(day)
     requested_day = requested_day_start is not None
-    if requested_day:
+    explicit_window = start is not None and end is not None and end > start
+    if explicit_window:
+        full_start = start
+        window_end = end
+    elif requested_day:
         full_start = requested_day_start
         window_end = requested_day_start + 86400
     else:
         window_end = now_ts
-        full_start = retention_start
+        full_start = default_window_start
 
     total_duration = max(0, window_end - full_start)
     within_retention = full_start >= retention_start
-    can_backfill_live = not requested_day
+    can_backfill_live = (not requested_day) and (not explicit_window)
     backfill_attempted = False
     backfill_result = None
     snapshot_flights = []
@@ -697,6 +788,7 @@ def api_tracks_plan():
             "end": window_end,
             "day": day if requested_day else None,
             "requested_day": requested_day,
+            "explicit_window": explicit_window,
             "within_retention": within_retention,
         },
         "query": {"lat": lat, "lon": lon, "radius": radius, "min_alt": min_alt},

@@ -329,6 +329,19 @@ class TestTracksPlanEndpoint(TracksAPITestCase):
         data = json.loads(resp.data)
         self.assertIn(data["density"], ["low", "medium", "high"])
 
+    def test_plan_explicit_time_window(self):
+        start = self.now - 3600
+        end = self.now
+        resp = self.client.get(
+            f"/api/tracks/plan?lat=40.758&lon=-73.985&radius=25&start={start}&end={end}"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertEqual(data["total_duration_seconds"], 3600)
+        self.assertTrue(data["playback_window"]["explicit_window"])
+        self.assertEqual(data["playback_window"]["start"], start)
+        self.assertEqual(data["playback_window"]["end"], end)
+
     def test_plan_no_tracks_area(self):
         resp = self.client.get("/api/tracks/plan?lat=0.0&lon=0.0&radius=10")
         data = json.loads(resp.data)

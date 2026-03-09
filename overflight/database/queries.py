@@ -11,7 +11,7 @@ import sqlite3
 import time
 from typing import Optional
 
-from overflight.config import DEFAULT_RADIUS_MILES, MAX_RADIUS_MILES, RETENTION_HOURS
+from overflight.config import DEFAULT_RADIUS_MILES, MAX_RADIUS_MILES, SEARCH_DEFAULT_WINDOW_HOURS
 
 # Earth's radius in miles
 EARTH_RADIUS_MILES = 3958.8
@@ -58,7 +58,7 @@ def _bounding_box(lat, lon, radius_miles):
     )
 
 
-def find_flights_near(conn, lat, lon, radius_miles=None, hours=None):
+def find_flights_near(conn, lat, lon, radius_miles=None, hours=None, start_time=None, end_time=None):
     """
     Find all distinct aircraft that passed within a radius of a location.
 
@@ -70,7 +70,9 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None):
         lat: User latitude in decimal degrees.
         lon: User longitude in decimal degrees.
         radius_miles: Search radius in miles. Defaults to config value.
-        hours: Hours of history to search. Defaults to config retention.
+        hours: Hours of history to search. Defaults to configured search window.
+        start_time: Optional explicit Unix timestamp lower bound.
+        end_time: Optional explicit Unix timestamp upper bound.
 
     Returns:
         List of dicts, each representing one aircraft's closest approach,
@@ -82,10 +84,13 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None):
         radius_miles = DEFAULT_RADIUS_MILES
     radius_miles = min(radius_miles, MAX_RADIUS_MILES)
 
-    if hours is None:
-        hours = RETENTION_HOURS
+    if start_time is None:
+        if hours is None:
+            hours = SEARCH_DEFAULT_WINDOW_HOURS
+        start_time = int(time.time()) - (hours * 3600)
+    if end_time is None:
+        end_time = int(time.time())
 
-    cutoff = int(time.time()) - (hours * 3600)
     min_lat, max_lat, min_lon, max_lon = _bounding_box(lat, lon, radius_miles)
 
     # Bounding-box query to get candidate rows
@@ -95,10 +100,11 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None):
             icao24, callsign, latitude, longitude, altitude,
             velocity, heading, vertical_rate, on_ground, timestamp
         FROM state_vectors
-        WHERE timestamp >= ?
+                WHERE timestamp >= ?
+                    AND timestamp <= ?
           AND latitude BETWEEN ? AND ?
           AND longitude BETWEEN ? AND ?
-    """, (cutoff, min_lat, max_lat, min_lon, max_lon))
+        """, (start_time, end_time, min_lat, max_lat, min_lon, max_lon))
 
     # Group by icao24 and find closest approach for each
     aircraft = {}  # icao24 -> (min_distance, row_dict)
@@ -123,7 +129,7 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None):
     return results
 
 
-def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None):
+def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None, start_time=None, end_time=None):
     """
     SpatiaLite-optimized version of find_flights_near.
 
@@ -140,10 +146,13 @@ def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None):
         radius_miles = DEFAULT_RADIUS_MILES
     radius_miles = min(radius_miles, MAX_RADIUS_MILES)
 
-    if hours is None:
-        hours = RETENTION_HOURS
+    if start_time is None:
+        if hours is None:
+            hours = SEARCH_DEFAULT_WINDOW_HOURS
+        start_time = int(time.time()) - (hours * 3600)
+    if end_time is None:
+        end_time = int(time.time())
 
-    cutoff = int(time.time()) - (hours * 3600)
     radius_meters = radius_miles * 1609.34
 
     cursor = conn.cursor()
@@ -153,7 +162,8 @@ def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None):
             velocity, heading, vertical_rate, on_ground, timestamp,
             ST_Distance(geom, MakePoint(?, ?, 4326), 1) AS distance_m
         FROM state_vectors
-        WHERE timestamp >= ?
+                WHERE timestamp >= ?
+                    AND timestamp <= ?
           AND ROWID IN (
               SELECT ROWID FROM SpatialIndex
               WHERE f_table_name = 'state_vectors'
@@ -162,7 +172,7 @@ def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None):
           )
           AND ST_Distance(geom, MakePoint(?, ?, 4326), 1) <= ?
         ORDER BY icao24, distance_m
-    """, (lon, lat, cutoff, lon, lat, radius_meters, lon, lat, radius_meters))
+        """, (lon, lat, start_time, end_time, lon, lat, radius_meters, lon, lat, radius_meters))
 
     # Deduplicate by icao24, keeping closest approach
     aircraft = {}
