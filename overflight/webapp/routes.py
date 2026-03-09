@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, make_response, render_template, request
 
+from overflight.airports import find_airports_near
 from overflight.config import (
     CHUNK_SIZE_HIGH_DENSITY_MINUTES,
     CHUNK_SIZE_LOW_DENSITY_HOURS,
@@ -426,6 +427,46 @@ def api_resolve_zip():
         "longitude": result["longitude"],
         "city": result["city"],
         "state": result["state"],
+    })
+
+
+@bp.route("/api/airports")
+def api_airports():
+    """Return bundled airport points near a location for map overlays."""
+    lat = request.args.get("lat", type=float)
+    lon = request.args.get("lon", type=float)
+    radius = request.args.get("radius", default=DEFAULT_RADIUS_MILES, type=float)
+    limit = request.args.get("limit", default=40, type=int)
+
+    if lat is None or lon is None:
+        return jsonify({"error": "lat and lon are required"}), 400
+
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return jsonify({"error": "Invalid coordinates"}), 400
+
+    radius = min(max(radius, 1), MAX_RADIUS_MILES)
+    limit = min(max(limit, 1), 100)
+
+    try:
+        airports = find_airports_near(lat, lon, radius, limit=limit)
+    except FileNotFoundError:
+        logger.warning("Bundled airports dataset is missing")
+        airports = []
+    except Exception:
+        logger.exception("Airport query failed")
+        return jsonify({"error": "Airport query failed"}), 500
+
+    return jsonify({
+        "airports": airports,
+        "meta": {
+            "count": len(airports),
+            "query": {
+                "lat": lat,
+                "lon": lon,
+                "radius": radius,
+                "limit": limit,
+            },
+        },
     })
 
 

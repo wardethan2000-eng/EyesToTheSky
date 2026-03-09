@@ -21,6 +21,7 @@
     var playbackBound = false;
     var aircraftFirstSeen = {};
     var FADE_IN_MS = 1200;
+    var airportPopup = null;
 
     // SVG icons for the play/pause button — render crisply at any DPI.
     var ICON_PLAY  = '<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor"><path d="M0 0L12 7L0 14Z"/></svg>';
@@ -215,11 +216,13 @@
             ensureMap(lat, lon, getZoomForRadius(searchRadius));
             onMapReady(function () {
                 drawSearchRadius();
+                fetchAirports();
             });
         } else {
             ensureMap(DEFAULT_US_VIEW.lat, DEFAULT_US_VIEW.lon, DEFAULT_US_VIEW.zoom);
             onMapReady(function () {
                 clearSearchRadius();
+                clearAirports();
             });
         }
     }
@@ -239,6 +242,7 @@
         onMapReady(function () {
             centerMap(lat, lon, getZoomForRadius(radius));
             drawSearchRadius();
+            fetchAirports();
             // Show the day toggle once the user has an active search area.
             if (dayToggle) dayToggle.style.display = "flex";
             startPlayback();
@@ -371,6 +375,16 @@
             data: emptyFeatureCollection()
         });
 
+        map.addSource("airports", {
+            type: "geojson",
+            data: emptyFeatureCollection()
+        });
+
+        map.addSource("airport-runways", {
+            type: "geojson",
+            data: emptyFeatureCollection()
+        });
+
         // Search radius circle
         map.addLayer({
             id: "search-radius-fill",
@@ -406,14 +420,146 @@
             }
         });
 
+        // Active trail geometry is kept in state, but we do not render it by
+        // default. The always-on trail layer makes airport interaction too
+        // noisy, so only the explicitly selected aircraft track is shown.
+
         map.addLayer({
-            id: "active-trails-line",
-            type: "line",
-            source: "active-trails",
+            id: "airport-hit-area-layer",
+            type: "circle",
+            source: "airports",
+            minzoom: 5,
             paint: {
-                "line-color": "#1f7ae0",
-                "line-width": 1.2,
-                "line-opacity": 0.22
+                "circle-radius": [
+                    "interpolate", ["linear"], ["get", "importance"],
+                    1, 14,
+                    3, 18,
+                    5, 24
+                ],
+                "circle-color": "#000000",
+                "circle-opacity": 0.01,
+                "circle-stroke-width": 0
+            }
+        });
+
+        map.addLayer({
+            id: "airport-runway-casing-layer",
+            type: "line",
+            source: "airport-runways",
+            minzoom: 8,
+            layout: {
+                "line-cap": "round"
+            },
+            paint: {
+                "line-color": "rgba(255, 255, 255, 0.9)",
+                "line-width": [
+                    "interpolate", ["linear"], ["zoom"],
+                    8, 4,
+                    11, 7,
+                    14, 10
+                ],
+                "line-opacity": 0.9
+            }
+        });
+
+        map.addLayer({
+            id: "airport-runway-layer",
+            type: "line",
+            source: "airport-runways",
+            minzoom: 8,
+            layout: {
+                "line-cap": "round"
+            },
+            paint: {
+                "line-color": [
+                    "match", ["get", "surface"],
+                    "concrete", "#5d6874",
+                    "asphalt", "#3d4650",
+                    "#46525d"
+                ],
+                "line-width": [
+                    "interpolate", ["linear"], ["zoom"],
+                    8, 2,
+                    11, 4,
+                    14, 6
+                ],
+                "line-opacity": 0.95
+            }
+        });
+
+        map.addLayer({
+            id: "airport-halo-layer",
+            type: "circle",
+            source: "airports",
+            minzoom: 6,
+            paint: {
+                "circle-radius": [
+                    "interpolate", ["linear"], ["get", "importance"],
+                    1, 7,
+                    3, 10,
+                    5, 14
+                ],
+                "circle-color": "rgba(19, 51, 87, 0.10)",
+                "circle-stroke-width": 1.5,
+                "circle-stroke-color": "rgba(19, 51, 87, 0.30)"
+            }
+        });
+
+        map.addLayer({
+            id: "airport-points-layer",
+            type: "circle",
+            source: "airports",
+            minzoom: 6,
+            paint: {
+                "circle-radius": [
+                    "interpolate", ["linear"], ["get", "importance"],
+                    1, 4.5,
+                    3, 6.5,
+                    5, 9
+                ],
+                "circle-color": [
+                    "match", ["get", "type"],
+                    "large_airport", "#355c9a",
+                    "medium_airport", "#355c9a",
+                    "#934a8f"
+                ],
+                "circle-stroke-width": 2,
+                "circle-stroke-color": "#ffffff",
+                "circle-opacity": 0.9
+            }
+        });
+
+        map.addLayer({
+            id: "airport-labels-layer",
+            type: "symbol",
+            source: "airports",
+            minzoom: 6,
+            layout: {
+                "text-field": [
+                    "step", ["zoom"],
+                    ["get", "display_code"],
+                    10,
+                    ["concat", ["get", "display_code"], "\n", ["get", "label_name"]]
+                ],
+                "text-font": ["Open Sans Bold"],
+                "text-size": [
+                    "interpolate", ["linear"], ["zoom"],
+                    6, 11,
+                    9, 13,
+                    12, 14
+                ],
+                "text-offset": [0, 1.45],
+                "text-line-height": 1.05,
+                "text-letter-spacing": 0.08,
+                "text-max-width": 11,
+                "text-anchor": "top",
+                "text-optional": true,
+                "text-allow-overlap": true
+            },
+            paint: {
+                "text-color": "#203a67",
+                "text-halo-color": "rgba(255,255,240,0.98)",
+                "text-halo-width": 2.5
             }
         });
 
@@ -510,6 +656,21 @@
         });
         map.on("mouseleave", "aircraft-icons-layer", function () {
             map.getCanvas().style.cursor = "";
+        });
+
+        ["airport-hit-area-layer", "airport-points-layer", "airport-labels-layer", "airport-runway-layer"].forEach(function (layerId) {
+            map.on("click", layerId, function (e) {
+                if (!e.features || !e.features.length) return;
+                showAirportPopup(e.features[0]);
+            });
+
+            map.on("mouseenter", layerId, function () {
+                map.getCanvas().style.cursor = "pointer";
+            });
+
+            map.on("mouseleave", layerId, function () {
+                map.getCanvas().style.cursor = "";
+            });
         });
     }
 
@@ -654,6 +815,175 @@
     function clearSearchRadius() {
         if (!map || !mapLoaded || !map.getSource("search-radius")) return;
         map.getSource("search-radius").setData(emptyFeatureCollection());
+    }
+
+    function fetchAirports() {
+        if (searchLat == null || searchLon == null || searchRadius == null) {
+            clearAirports();
+            return;
+        }
+
+        fetch(
+            "/api/airports?lat=" + encodeURIComponent(searchLat) +
+            "&lon=" + encodeURIComponent(searchLon) +
+            "&radius=" + encodeURIComponent(searchRadius) +
+            "&limit=40"
+        )
+            .then(function (resp) {
+                if (!resp.ok) {
+                    return resp.json().then(function (data) {
+                        throw new Error((data && data.error) || "Airport fetch failed");
+                    });
+                }
+                return resp.json();
+            })
+            .then(function (data) {
+                updateAirportsOnMap((data && data.airports) || []);
+            })
+            .catch(function (err) {
+                console.warn("Airport overlay failed", err);
+                clearAirports();
+            });
+    }
+
+    function updateAirportsOnMap(airports) {
+        if (!map || !mapLoaded || !map.getSource("airports") || !map.getSource("airport-runways")) return;
+
+        var features = (airports || []).map(function (airport) {
+            if (!isFinite(airport.latitude) || !isFinite(airport.longitude)) {
+                return null;
+            }
+
+            return {
+                type: "Feature",
+                geometry: {
+                    type: "Point",
+                    coordinates: [airport.longitude, airport.latitude]
+                },
+                properties: {
+                    icao: airport.icao || "",
+                    iata: airport.iata || "",
+                    name: airport.name || "Airport",
+                    municipality: airport.municipality || "",
+                    state: airport.state || "",
+                    type: airport.type || "medium_airport",
+                    display_code: airport.display_code || airport.iata || airport.icao || airport.name || "APT",
+                    label_name: airportLabelName(airport),
+                    elevation_ft: airport.elevation_ft || null,
+                    longest_runway_ft: airport.longest_runway_ft || 0,
+                    importance: airport.importance || 1,
+                    distance_miles: airport.distance_miles || null,
+                    runway_count: airport.runways ? airport.runways.length : 0
+                }
+            };
+        }).filter(Boolean);
+
+        var runwayFeatures = [];
+        (airports || []).forEach(function (airport) {
+            var runways = airport.runways || [];
+            runways.forEach(function (runway) {
+                var centerline = runway.centerline || [];
+                if (centerline.length < 2) {
+                    return;
+                }
+
+                runwayFeatures.push({
+                    type: "Feature",
+                    geometry: {
+                        type: "LineString",
+                        coordinates: centerline
+                    },
+                    properties: {
+                        icao: airport.icao || "",
+                        iata: airport.iata || "",
+                        name: airport.name || "Airport",
+                        municipality: airport.municipality || "",
+                        state: airport.state || "",
+                        display_code: airport.display_code || airport.iata || airport.icao || airport.name || "APT",
+                        label_name: airportLabelName(airport),
+                        longest_runway_ft: runway.length_ft || airport.longest_runway_ft || 0,
+                        distance_miles: airport.distance_miles || null,
+                        runway_ident: runway.ident || "",
+                        surface: runway.surface || "unknown"
+                    }
+                });
+            });
+        });
+
+        map.getSource("airports").setData({
+            type: "FeatureCollection",
+            features: features
+        });
+
+        map.getSource("airport-runways").setData({
+            type: "FeatureCollection",
+            features: runwayFeatures
+        });
+    }
+
+    function clearAirports() {
+        if (!map || !mapLoaded || !map.getSource("airports") || !map.getSource("airport-runways")) return;
+        if (airportPopup) {
+            airportPopup.remove();
+            airportPopup = null;
+        }
+        map.getSource("airports").setData(emptyFeatureCollection());
+        map.getSource("airport-runways").setData(emptyFeatureCollection());
+    }
+
+    function showAirportPopup(feature) {
+        if (!map || !feature || !feature.geometry || !feature.geometry.coordinates) return;
+
+        var props = feature.properties || {};
+        var code = props.display_code || props.iata || props.icao || "Airport";
+        var meta = [];
+        if (props.municipality) meta.push(props.municipality + (props.state ? ", " + props.state : ""));
+        if (props.runway_ident) meta.push(props.runway_ident);
+        if (props.longest_runway_ft) meta.push(formatNumber(props.longest_runway_ft) + " ft runway");
+        if (props.distance_miles != null) meta.push(props.distance_miles + " mi away");
+
+        if (airportPopup) {
+            airportPopup.remove();
+        }
+
+        airportPopup = new maplibregl.Popup({
+            closeButton: true,
+            closeOnClick: true,
+            offset: 10
+        })
+            .setLngLat(feature.geometry.coordinates)
+            .setHTML(
+                '<div class="airport-popup">' +
+                    '<strong>' + escapeHtml(props.name || code) + '</strong>' +
+                    '<div>' + escapeHtml(code) + '</div>' +
+                    (meta.length ? '<div>' + escapeHtml(meta.join(' | ')) + '</div>' : '') +
+                '</div>'
+            )
+            .addTo(map);
+    }
+
+    function airportLabelName(airport) {
+        var name = (airport && airport.name ? String(airport.name) : "").trim();
+        if (!name) {
+            return airport && airport.municipality ? airport.municipality : "Airport";
+        }
+
+        name = name
+            .replace(/\bInternational Airport\b/gi, "")
+            .replace(/\bNational Airport\b/gi, "")
+            .replace(/\bRegional Airport\b/gi, "")
+            .replace(/\bMunicipal Airport\b/gi, "")
+            .replace(/\bAirport\b/gi, "")
+            .replace(/\bAirfield\b/gi, "")
+            .replace(/\bField\b/gi, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (name.length > 22) {
+            name = name.slice(0, 22).trim();
+        }
+
+        return name || (airport && airport.municipality ? airport.municipality : "Airport");
     }
 
     // --- Aircraft Rendering ---

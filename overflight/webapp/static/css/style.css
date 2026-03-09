@@ -600,6 +600,21 @@ a {
     font-size: 0.76rem;
 }
 
+.airport-popup {
+    min-width: 180px;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: #173252;
+}
+
+.airport-popup strong {
+    display: block;
+    margin-bottom: 0.2rem;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 0.88rem;
+    color: #102945;
+}
+
 .playback-controls {
     position: absolute;
     left: 0;

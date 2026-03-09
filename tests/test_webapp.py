@@ -10,6 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from overflight.airports import load_airports
 from overflight.database.schema import init_enrichment_db, init_flight_db, init_zipcode_db
 from overflight.ingestion.poller import insert_state_vectors
 
@@ -228,6 +229,72 @@ class TestResolveZipAPI(WebAppTestCase):
     def test_resolve_unknown_zip(self):
         resp = self.client.get("/api/resolve-zip?zip=99999")
         self.assertEqual(resp.status_code, 404)
+
+
+class TestAirportsAPI(WebAppTestCase):
+    """Test the /api/airports endpoint."""
+
+    def test_airports_missing_params(self):
+        resp = self.client.get("/api/airports")
+        self.assertEqual(resp.status_code, 400)
+        data = json.loads(resp.data)
+        self.assertIn("error", data)
+
+    def test_airports_invalid_coords(self):
+        resp = self.client.get("/api/airports?lat=999&lon=999")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_airports_near_nyc(self):
+        resp = self.client.get("/api/airports?lat=40.758&lon=-73.9855&radius=25")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertIn("airports", data)
+        self.assertIn("meta", data)
+        airport_codes = {airport["icao"] for airport in data["airports"]}
+        self.assertIn("KJFK", airport_codes)
+        self.assertIn("KLGA", airport_codes)
+        self.assertIn("KEWR", airport_codes)
+        self.assertNotIn("KORD", airport_codes)
+
+    def test_airports_include_display_metadata(self):
+        resp = self.client.get("/api/airports?lat=37.687&lon=-97.33&radius=20")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertGreater(len(data["airports"]), 0)
+        airport = data["airports"][0]
+        self.assertIn("display_code", airport)
+        self.assertIn("importance", airport)
+        self.assertIn("distance_miles", airport)
+
+    def test_wichita_airports_include_runways(self):
+        resp = self.client.get("/api/airports?lat=37.6872&lon=-97.3301&radius=35")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        ict = next((airport for airport in data["airports"] if airport["icao"] == "KICT"), None)
+        self.assertIsNotNone(ict)
+        self.assertIn("runways", ict)
+        self.assertGreaterEqual(len(ict["runways"]), 1)
+        self.assertIn("centerline", ict["runways"][0])
+
+    def test_non_wichita_airports_get_schematic_runways(self):
+        resp = self.client.get("/api/airports?lat=40.758&lon=-73.9855&radius=25")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        jfk = next((airport for airport in data["airports"] if airport["icao"] == "KJFK"), None)
+        self.assertIsNotNone(jfk)
+        self.assertIn("runways", jfk)
+        self.assertGreaterEqual(len(jfk["runways"]), 1)
+        self.assertTrue(jfk["runways"][0].get("schematic"))
+        self.assertIn("centerline", jfk["runways"][0])
+
+    def test_all_bundled_airports_have_runway_geometry(self):
+        airports = load_airports()
+        self.assertGreater(len(airports), 0)
+        for airport in airports:
+            self.assertGreaterEqual(len(airport.get("runways") or []), 1)
+            first = airport["runways"][0]
+            self.assertIn("centerline", first)
+            self.assertGreaterEqual(len(first["centerline"]), 2)
 
 
 class TestStatusAPI(WebAppTestCase):
