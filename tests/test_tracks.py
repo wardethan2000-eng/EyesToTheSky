@@ -334,6 +334,27 @@ class TestTrackBuilding(unittest.TestCase):
         cursor.execute("SELECT icao24 FROM track_segments")
         self.assertEqual(cursor.fetchone()[0], "def456")
 
+    def test_full_rebuild_replaces_existing_segments(self):
+        """Repeated full rebuilds should not duplicate derived track rows."""
+        rows = [
+            (
+                "abc123", "UAL100", 40.0 + i * 0.01, -74.0 + i * 0.01,
+                10000, 250, 45, 0, 0, self.now - 600 + i * 10
+            )
+            for i in range(10)
+        ]
+        _insert_state_vectors(self.conn, rows)
+
+        first_count = build_tracks(self.conn)
+        self.assertEqual(first_count, 1)
+
+        second_count = build_tracks(self.conn)
+        self.assertEqual(second_count, 1)
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM track_segments")
+        self.assertEqual(cursor.fetchone()[0], 1)
+
 
 class TestIncrementalBuild(unittest.TestCase):
     """Test incremental track building."""

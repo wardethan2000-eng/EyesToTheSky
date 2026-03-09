@@ -37,6 +37,8 @@
     var dayToggle, dayBtnYesterday, dayBtnToday;
     var pendingFocusFlight = null;
     var lastSpeedWindowSignature = "";
+    var playbackStartupTimer = null;
+    var lastPlaybackStatusText = "";
 
     // Current search params
     var searchLat = null;
@@ -848,7 +850,28 @@
         var playbackEndTime = selectedWindowKey === "yesterday" ? null : selectedWindowEnd;
 
         mapLoading.style.display = "flex";
+        mapLoading.classList.remove("is-empty");
         if (mapWarning) mapWarning.style.display = "none";
+        lastPlaybackStatusText = "Starting playback...";
+
+        if (playbackStartupTimer) {
+            window.clearTimeout(playbackStartupTimer);
+        }
+        playbackStartupTimer = window.setTimeout(function () {
+            var state = window.OverflightPlayback && typeof window.OverflightPlayback.getState === "function"
+                ? window.OverflightPlayback.getState()
+                : null;
+            mapLoading.classList.add("is-empty");
+            mapLoading.style.display = "flex";
+            playbackControls.style.display = "none";
+            mapLoadingText.textContent = "Playback startup stalled after loading data.";
+            showMapWarning(
+                "Startup stalled at " +
+                ((state && state.startupStage) || "unknown stage") +
+                ". Last status: " +
+                (lastPlaybackStatusText || "none")
+            );
+        }, 12000);
 
         window.OverflightPlayback.init(searchLat, searchLon, searchRadius, {
             day: playbackDay,
@@ -862,11 +885,13 @@
             },
             onLoadingProgress: function (status) {
                 if (typeof status === "string") {
+                    lastPlaybackStatusText = status;
                     mapLoadingText.textContent = status;
                     return;
                 }
 
                 if (status && status.message) {
+                    lastPlaybackStatusText = status.message;
                     if (status.percent != null) {
                         mapLoadingText.textContent = status.message + " " + status.percent + "%";
                     } else {
@@ -879,54 +904,100 @@
                 }
             },
             onPlaybackStateChange: function (playing) {
-                playPauseBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+                if (playPauseBtn) {
+                    playPauseBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+                }
             },
             onReady: function (state) {
-                // Reset fade-in tracking for the new playback session
-                aircraftFirstSeen = {};
-
-                if (state && (state.empty || state.error)) {
-                    playbackControls.style.display = "none";
-                    mapLoading.style.display = "flex";
-                    mapLoading.classList.remove("is-empty");
-                    if (state.empty && state.collecting) {
-                        mapLoadingText.textContent = "Collecting flight data - check back in a few minutes.";
-                    } else if (state.empty) {
-                        mapLoading.classList.add("is-empty");
-                        mapLoadingText.textContent = "No aircraft data available for this area yet.";
-                    } else {
-                        mapLoadingText.textContent = "Unable to load playback data. Please try again.";
+                try {
+                    if (playbackStartupTimer) {
+                        window.clearTimeout(playbackStartupTimer);
+                        playbackStartupTimer = null;
                     }
-                    return;
-                }
 
-                if (state && state.staticOnly) {
-                    mapLoading.classList.remove("is-empty");
-                    mapLoading.style.display = "none";
-                    playbackControls.style.display = "none";
-                    showMapWarning("Showing latest position snapshots. Animated playback will appear as track history fills in.");
+                    // Reset fade-in tracking for the new playback session
+                    aircraftFirstSeen = {};
+
+                    if (state && (state.empty || state.error)) {
+                        if (playbackControls) playbackControls.style.display = "none";
+                        if (mapLoading) {
+                            mapLoading.style.display = "flex";
+                            mapLoading.classList.remove("is-empty");
+                        }
+                        if (state.empty && state.collecting) {
+                            if (mapLoadingText) mapLoadingText.textContent = "Collecting flight data - check back in a few minutes.";
+                        } else if (state.empty) {
+                            if (mapLoading) mapLoading.classList.add("is-empty");
+                            if (mapLoadingText) mapLoadingText.textContent = "No aircraft data available for this area yet.";
+                        } else {
+                            if (mapLoading) mapLoading.classList.add("is-empty");
+                            if (mapLoadingText) mapLoadingText.textContent = "Unable to load playback data. Please try again.";
+                            if (state.startupStage || state.startupError) {
+                                showMapWarning(
+                                    "Startup failed at " +
+                                    (state.startupStage || "unknown stage") +
+                                    ": " +
+                                    (state.startupError || "unknown error")
+                                );
+                            }
+                        }
+                        return;
+                    }
+
+                    if (state && state.staticOnly) {
+                        if (mapLoading) {
+                            mapLoading.classList.remove("is-empty");
+                            mapLoading.style.display = "none";
+                        }
+                        if (playbackControls) playbackControls.style.display = "none";
+                        showMapWarning("Showing latest position snapshots. Animated playback will appear as track history fills in.");
+                        maybeApplyPendingFocus();
+                        return;
+                    }
+
+                    applySuggestedAltitude(state);
+                    if (mapLoading) {
+                        mapLoading.classList.remove("is-empty");
+                        mapLoading.style.display = "none";
+                    }
+                    if (playbackControls) playbackControls.style.display = "flex";
+
+                    if (state && state.coverageNotice) {
+                        showMapWarning(state.coverageNotice);
+                    }
+
+                    // Update the map chip to show the date being replayed.
+                    var chip = document.getElementById("map-chip");
+                    if (chip) {
+                        chip.textContent = searchDateLabel
+                            ? (searchDateLabel + " replay")
+                            : "Area replay";
+                    }
+
+                    // Autoplay is best-effort only; if it fails, keep the initial frame visible.
+                    try {
+                        window.OverflightPlayback.play();
+                        if (playPauseBtn) {
+                            playPauseBtn.innerHTML = ICON_PAUSE;
+                        }
+                    } catch (err) {
+                        console.error("Playback autoplay failed", err);
+                        showMapWarning("Playback loaded, but autoplay failed. Use the play button to start replay.");
+                    }
+
                     maybeApplyPendingFocus();
-                    return;
+                } catch (err) {
+                    console.error("Map onReady failed", err);
+                    if (mapLoading) {
+                        mapLoading.classList.add("is-empty");
+                        mapLoading.style.display = "flex";
+                    }
+                    if (mapLoadingText) {
+                        mapLoadingText.textContent = "Playback loaded, but the map UI could not finish initializing.";
+                    }
+                    if (playbackControls) playbackControls.style.display = "none";
+                    showMapWarning(err && err.message ? err.message : "Map UI initialization failed.");
                 }
-
-                applySuggestedAltitude(state);
-                mapLoading.classList.remove("is-empty");
-                mapLoading.style.display = "none";
-                playbackControls.style.display = "flex";
-
-                // Update the map chip to show the date being replayed.
-                var chip = document.getElementById("map-chip");
-                if (chip) {
-                    chip.textContent = searchDateLabel
-                        ? (searchDateLabel + " replay")
-                        : "Area replay";
-                }
-
-                // Start playback automatically so aircraft motion is visible
-                // without requiring an extra click after switching to map view.
-                window.OverflightPlayback.play();
-                playPauseBtn.innerHTML = ICON_PAUSE;
-                maybeApplyPendingFocus();
             }
         });
     }

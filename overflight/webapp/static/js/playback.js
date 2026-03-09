@@ -44,6 +44,7 @@
     var lastRenderTime = 0;
     var failedChunkCooldown = {};
     var initialChunkIndex = 0;
+    var startupStage = "idle";
 
     // Callbacks set by map.js
     var onAircraftUpdate = null;  // fn(visibleAircraft: Array)
@@ -72,6 +73,16 @@
             ", tracks built " + backfill.segments + ".";
     }
 
+    function safeInvoke(callback, args, label) {
+        try {
+            callback.apply(null, args || []);
+            return true;
+        } catch (err) {
+            console.error("Playback callback failed: " + label, err);
+            return false;
+        }
+    }
+
     function emitSnapshotFallback(snapshotFlights) {
         var visible = (snapshotFlights || []).map(function (f, idx) {
             return {
@@ -98,7 +109,7 @@
 
         var detailed = visible;
         var dots = [];
-        onAircraftUpdate(detailed, dots, visible.length, []);
+        safeInvoke(onAircraftUpdate, [detailed, dots, visible.length, []], "onAircraftUpdate(snapshot)");
     }
 
     /**
@@ -133,11 +144,13 @@
         currentChunkIndex = -1;
         lastRenderTime = 0;
         initialChunkIndex = 0;
+        startupStage = "requesting-plan";
 
         emitLoadingProgress("Fetching playback plan...", 0);
 
         function buildPlanUrl(dayParam, startParam, endParam) {
             var url = "/api/tracks/plan?lat=" + lat + "&lon=" + lon + "&radius=" + radius;
+            url += "&trim=1";
             if (altitudeFilter > 0) url += "&min_alt=" + altitudeFilter;
             if (dayParam) url += "&day=" + encodeURIComponent(dayParam);
             if (startParam != null && endParam != null) {
@@ -166,9 +179,9 @@
                             percent: 100,
                             warning: true
                         });
-                        onAircraftUpdate([], [], 0);
-                        onPlaybackTimeChange(0, 0);
-                        onReady({ empty: true, collecting: true });
+                        safeInvoke(onAircraftUpdate, [[], [], 0, []], "onAircraftUpdate(no-data-day)");
+                        safeInvoke(onPlaybackTimeChange, [0, 0], "onPlaybackTimeChange(no-data-day)");
+                        safeInvoke(onReady, [{ empty: true, collecting: true }], "onReady(no-data-day)");
                         return;
                     }
 
@@ -187,13 +200,13 @@
                                 percent: 100,
                                 collecting: false
                             });
-                            onReady({
+                            safeInvoke(onReady, [{
                                 staticOnly: true,
                                 snapshotCount: snapshots.length,
                                 density: plan.density,
                                 suggestedMinAlt: plan.suggested_min_alt,
                                 totalUniqueAircraft: plan.total_unique_aircraft || 0
-                            });
+                            }], "onReady(snapshot)");
                             return;
                         }
 
@@ -206,15 +219,15 @@
                             percent: 100,
                             collecting: isCollecting
                         });
-                        onAircraftUpdate([], [], 0);
-                        onPlaybackTimeChange(0, 0);
-                        onReady({
+                        safeInvoke(onAircraftUpdate, [[], [], 0, []], "onAircraftUpdate(empty)");
+                        safeInvoke(onPlaybackTimeChange, [0, 0], "onPlaybackTimeChange(empty)");
+                        safeInvoke(onReady, [{
                             empty: true,
                             collecting: isCollecting,
                             density: plan.density,
                             suggestedMinAlt: plan.suggested_min_alt,
                             totalUniqueAircraft: plan.total_unique_aircraft || 0
-                        });
+                        }], "onReady(empty)");
                         return;
                     }
 
@@ -223,39 +236,67 @@
                     initialChunkIndex = findInitialChunkIndex(plan);
                     var initChunk = plan.chunks[initialChunkIndex];
                     playbackTime = initChunk.start;
+                    startupStage = "loading-initial-chunk";
 
                     // Only the center chunk blocks startup. Neighbor chunks are
                     // prefetched after ready so playback cannot get stuck in a
                     // partial-loading state.
                     loadInitialChunk(initialChunkIndex, function () {
-                        playbackTime = selectInitialPlaybackTime(initChunk.start);
-
                         try {
-                            // Render the initial playback frame immediately so aircraft are visible
-                            // even before the user presses play or touches the scrubber.
-                            updateVisibleAircraft();
-                            var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
-                            onPlaybackTimeChange(playbackTime, initialProgress);
+                            playbackTime = selectInitialPlaybackTime(initChunk.start);
+
+                            startupStage = "notifying-ready";
+                            emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
+                            if (!safeInvoke(onReady, [{
+                                density: plan.density,
+                                suggestedMinAlt: plan.suggested_min_alt,
+                                totalUniqueAircraft: plan.total_unique_aircraft || 0,
+                                coverageNotice: plan.playback_window && plan.playback_window.coverage_notice
+                            }], "onReady(success)")) {
+                                onLoadingProgress({
+                                    message: "Playback loaded, but part of the map UI failed to initialize.",
+                                    warning: true
+                                });
+                            }
+
+                            startupStage = "rendering-initial-frame";
+                            window.setTimeout(function () {
+                                try {
+                                    // Best-effort initial frame render after the map UI is ready.
+                                    updateVisibleAircraft();
+                                    var span = playbackEnd - playbackStart;
+                                    var initialProgress = span > 0 ? (playbackTime - playbackStart) / span : 0;
+                                    safeInvoke(onPlaybackTimeChange, [playbackTime, initialProgress], "onPlaybackTimeChange(initial)");
+                                } catch (err) {
+                                    console.error("Playback startup render failed", err);
+                                    onLoadingProgress({
+                                        message: "Playback loaded, but failed to render the initial frame. Press play or move the timeline to continue.",
+                                        warning: true
+                                    });
+                                }
+                            }, 0);
+
+                            startupStage = "ready";
+
+                            if (initialChunkIndex - 1 >= 0) {
+                                loadChunk(initialChunkIndex - 1);
+                            }
+                            if (plan && initialChunkIndex + 1 < plan.chunks.length) {
+                                loadChunk(initialChunkIndex + 1);
+                            }
                         } catch (err) {
-                            console.error("Playback startup render failed", err);
+                            console.error("Playback startup failed", startupStage, err);
                             onLoadingProgress({
-                                message: "Playback recovered from an initial render issue.",
+                                message: "Playback startup failed during " + startupStage + ": " + (err && err.message ? err.message : "unknown error"),
                                 warning: true
                             });
-                        }
-
-                        emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
-                        onReady({
-                            density: plan.density,
-                            suggestedMinAlt: plan.suggested_min_alt,
-                            totalUniqueAircraft: plan.total_unique_aircraft || 0
-                        });
-
-                        if (initialChunkIndex - 1 >= 0) {
-                            loadChunk(initialChunkIndex - 1);
-                        }
-                        if (plan && initialChunkIndex + 1 < plan.chunks.length) {
-                            loadChunk(initialChunkIndex + 1);
+                            safeInvoke(onAircraftUpdate, [[], [], 0, []], "onAircraftUpdate(error)");
+                            safeInvoke(onPlaybackTimeChange, [0, 0], "onPlaybackTimeChange(error)");
+                            safeInvoke(onReady, [{
+                                error: true,
+                                startupStage: startupStage,
+                                startupError: err && err.message ? err.message : "unknown error"
+                            }], "onReady(error)");
                         }
                     });
                 });
@@ -267,9 +308,9 @@
                     message: "Failed to load playback data.",
                     warning: true
                 });
-                onAircraftUpdate([], [], 0);
-                onPlaybackTimeChange(0, 0);
-                onReady({ error: true });
+                safeInvoke(onAircraftUpdate, [[], [], 0, []], "onAircraftUpdate(plan-catch)");
+                safeInvoke(onPlaybackTimeChange, [0, 0], "onPlaybackTimeChange(plan-catch)");
+                safeInvoke(onReady, [{ error: true }], "onReady(plan-catch)");
             });
     }
 
@@ -569,7 +610,7 @@
 
         // Notify time update
         var progress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
-        onPlaybackTimeChange(playbackTime, progress);
+        safeInvoke(onPlaybackTimeChange, [playbackTime, progress], "onPlaybackTimeChange(tick)");
 
         if (isPlaying) {
             animFrameId = requestAnimationFrame(tick);
@@ -704,7 +745,7 @@
         var detailed = visible;
         var dots = [];
 
-        onAircraftUpdate(detailed, dots, visible.length, trails);
+        safeInvoke(onAircraftUpdate, [detailed, dots, visible.length, trails], "onAircraftUpdate(render)");
     }
 
     function isRenderablePosition(pos) {
@@ -779,10 +820,10 @@
     }
 
     function isPointNearSearchBoundary(lat, lon) {
-        if (searchLat == null || searchLon == null || !searchRadiusMiles) {
+        if (mapCenterLat == null || mapCenterLon == null || !searchRadiusMiles) {
             return true;
         }
-        return distanceMiles(lat, lon, searchLat, searchLon) >= (searchRadiusMiles * EDGE_VISIBILITY_THRESHOLD);
+        return distanceMiles(lat, lon, mapCenterLat, mapCenterLon) >= (searchRadiusMiles * EDGE_VISIBILITY_THRESHOLD);
     }
 
     function getGroundPosition(track) {
@@ -1036,7 +1077,8 @@
             speedMultiplier: speedMultiplier,
             altitudeFilter: altitudeFilter,
             plan: plan,
-            trackCount: allTracks.length
+            trackCount: allTracks.length,
+            startupStage: startupStage
         };
     }
 

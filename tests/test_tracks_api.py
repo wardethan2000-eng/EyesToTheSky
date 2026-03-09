@@ -348,6 +348,23 @@ class TestTracksPlanEndpoint(TracksAPITestCase):
         self.assertEqual(data["density"], "low")
         self.assertEqual(data["total_unique_aircraft"], 0)
 
+    def test_plan_trim_to_available_coverage(self):
+        start = self.now - 24 * 3600
+        end = self.now
+        resp = self.client.get(
+            f"/api/tracks/plan?lat=40.758&lon=-73.985&radius=25&start={start}&end={end}&trim=1"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        playback_window = data["playback_window"]
+        self.assertTrue(playback_window["trimmed_to_available"])
+        self.assertEqual(playback_window["start"], start)
+        self.assertEqual(playback_window["end"], end)
+        self.assertGreater(playback_window["effective_start"], start)
+        self.assertLessEqual(playback_window["effective_end"], end)
+        self.assertLess(data["total_duration_seconds"], 24 * 3600)
+        self.assertTrue(playback_window["coverage_notice"])
+
 
 class TestAdaptiveChunkSizing(TracksAPITestCase):
     """Test that chunk sizing adapts to density."""

@@ -342,6 +342,13 @@ def build_tracks(conn, since_timestamp=None):
     """
     cursor = conn.cursor()
 
+    if since_timestamp is None:
+        # A full rebuild must replace the existing derived table rather than
+        # append to it, otherwise repeated maintenance rebuilds accumulate
+        # duplicate segments and playback startup cost grows over time.
+        cursor.execute("DELETE FROM track_segments")
+        conn.commit()
+
     if since_timestamp is not None:
         cursor.execute(
             "SELECT * FROM state_vectors WHERE timestamp >= ? ORDER BY icao24, timestamp",
@@ -703,3 +710,58 @@ def get_unique_aircraft_count(
     cursor = conn.cursor()
     cursor.execute(query, tuple(params))
     return cursor.fetchone()[0]
+
+
+def get_track_time_bounds(
+    conn,
+    lat,
+    lon,
+    radius_miles,
+    start_time=None,
+    end_time=None,
+    min_alt=0,
+    phases=None,
+):
+    """Return the earliest start and latest end across matching track segments."""
+    if start_time is None:
+        start_time = int(time.time()) - (RETENTION_HOURS * 3600)
+    if end_time is None:
+        end_time = int(time.time())
+
+    lat_delta = radius_miles / 69.0
+    lon_delta = _safe_lon_delta(lat, radius_miles)
+    bbox_min_lat = lat - lat_delta
+    bbox_max_lat = lat + lat_delta
+    bbox_min_lon = lon - lon_delta
+    bbox_max_lon = lon + lon_delta
+
+    params = [
+        start_time,
+        end_time,
+        bbox_min_lat,
+        bbox_max_lat,
+        bbox_min_lon,
+        bbox_max_lon,
+    ]
+    query = """
+        SELECT MIN(start_time), MAX(end_time) FROM track_segments
+        WHERE end_time >= ? AND start_time <= ?
+          AND max_lat >= ? AND min_lat <= ?
+          AND max_lon >= ? AND min_lon <= ?
+    """
+
+    if min_alt and min_alt > 0:
+        query += " AND COALESCE(max_altitude, 0) >= ?"
+        params.append(min_alt)
+
+    if phases:
+        placeholders = ",".join(["?"] * len(phases))
+        query += f" AND phase IN ({placeholders})"
+        params.extend(phases)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
+    row = cursor.fetchone()
+    if not row or row[0] is None or row[1] is None:
+        return (None, None)
+    return (int(row[0]), int(row[1]))

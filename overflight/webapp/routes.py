@@ -38,6 +38,7 @@ from overflight.database.schema import init_flight_db, init_tracks_db
 from overflight.database.tracks import (
     build_tracks_incremental,
     get_track_density,
+    get_track_time_bounds,
     get_tracks_near,
     get_unique_aircraft_count,
 )
@@ -636,6 +637,7 @@ def api_tracks_plan():
     start = request.args.get("start", type=int)
     end = request.args.get("end", type=int)
     min_alt = request.args.get("min_alt", default=0, type=float)
+    trim_to_available = bool(request.args.get("trim", default=0, type=int))
 
     if lat is None or lon is None:
         return jsonify({"error": "lat and lon are required"}), 400
@@ -663,11 +665,15 @@ def api_tracks_plan():
         full_start = default_window_start
 
     total_duration = max(0, window_end - full_start)
+    requested_start = full_start
+    requested_end = window_end
     within_retention = full_start >= retention_start
     can_backfill_live = (not requested_day) and (not explicit_window)
     backfill_attempted = False
     backfill_result = None
     snapshot_flights = []
+    trimmed_to_available = False
+    coverage_notice = None
 
     flight_conn = None
     try:
@@ -688,6 +694,35 @@ def api_tracks_plan():
             end_time=window_end,
             min_alt=min_alt,
         )
+
+        available_start, available_end = get_track_time_bounds(
+            flight_conn,
+            lat,
+            lon,
+            radius,
+            start_time=full_start,
+            end_time=window_end,
+            min_alt=min_alt,
+        )
+
+        if (
+            trim_to_available
+            and total_unique_aircraft > 0
+            and available_start is not None
+            and available_end is not None
+        ):
+            effective_start = max(full_start, available_start)
+            effective_end = min(window_end, available_end)
+            if effective_end > effective_start and (
+                effective_start > full_start or effective_end < window_end
+            ):
+                full_start = effective_start
+                window_end = effective_end
+                total_duration = max(0, window_end - full_start)
+                trimmed_to_available = True
+                coverage_notice = (
+                    "Limited replay history available. Showing the most recent captured playback window for this area."
+                )
 
         # Determine chunk size based on density
         density, suggested_min_alt = _classify_density(total_unique_aircraft)
@@ -807,12 +842,16 @@ def api_tracks_plan():
         "backfill_status": _backfill_status_payload(backfill_result, backfill_attempted),
         "snapshot_flights": snapshot_flights,
         "playback_window": {
-            "start": full_start,
-            "end": window_end,
+            "start": requested_start,
+            "end": requested_end,
+            "effective_start": full_start,
+            "effective_end": window_end,
             "day": day if requested_day else None,
             "requested_day": requested_day,
             "explicit_window": explicit_window,
             "within_retention": within_retention,
+            "trimmed_to_available": trimmed_to_available,
+            "coverage_notice": coverage_notice,
         },
         "query": {"lat": lat, "lon": lon, "radius": radius, "min_alt": min_alt},
     })
