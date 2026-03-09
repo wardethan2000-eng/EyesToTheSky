@@ -14,7 +14,9 @@ from overflight.database.tracks import (
     build_tracks_incremental,
     get_track_density,
     get_tracks_near,
+    get_track_windows_near,
 )
+from overflight.webapp.routes import _build_track_plan_chunks
 
 
 def _create_test_db():
@@ -333,6 +335,50 @@ class TestTrackBuilding(unittest.TestCase):
         cursor = self.conn.cursor()
         cursor.execute("SELECT icao24 FROM track_segments")
         self.assertEqual(cursor.fetchone()[0], "def456")
+
+    def test_chunk_planning_matches_density_queries(self):
+        """Chunk overlap estimation matches the prior per-chunk density query behavior."""
+        rows = []
+        for i in range(12):
+            rows.append((
+                "chunk01", "CHK101", 40.0 + i * 0.01, -74.0,
+                5000 + i * 100, 180, 45, 3, 0, self.now - 900 + i * 30
+            ))
+        for i in range(10):
+            rows.append((
+                "chunk02", "CHK202", 40.1 + i * 0.008, -74.1,
+                7000, 220, 90, 0, 0, self.now - 600 + i * 30
+            ))
+
+        _insert_state_vectors(self.conn, rows)
+        build_tracks(self.conn)
+
+        full_start = self.now - 1000
+        window_end = self.now
+        chunk_seconds = 300
+        track_windows = get_track_windows_near(
+            self.conn,
+            40.05,
+            -74.05,
+            25,
+            start_time=full_start,
+            end_time=window_end,
+        )
+        chunks = _build_track_plan_chunks(track_windows, full_start, window_end, chunk_seconds)
+
+        expected = [
+            get_track_density(
+                self.conn,
+                40.05,
+                -74.05,
+                25,
+                start_time=chunk["start"],
+                end_time=chunk["end"],
+            )
+            for chunk in chunks
+        ]
+
+        self.assertEqual([chunk["estimated_tracks"] for chunk in chunks], expected)
 
     def test_full_rebuild_replaces_existing_segments(self):
         """Repeated full rebuilds should not duplicate derived track rows."""

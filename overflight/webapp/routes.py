@@ -35,11 +35,10 @@ from overflight.config import (
     SEARCH_DEFAULT_WINDOW_HOURS,
 )
 from overflight.database.queries import enrich_results, find_flights_near
-from overflight.database.schema import init_flight_db, init_tracks_db
+from overflight.database.schema import ensure_tracks_schema, init_flight_db
 from overflight.database.tracks import (
     build_tracks_incremental,
-    get_track_density,
-    get_track_time_bounds,
+    get_track_windows_near,
     get_tracks_near,
     get_unique_aircraft_count,
 )
@@ -122,19 +121,16 @@ def _backfill_area_from_opensky(lat, lon, radius):
         return {"skipped": False, "fetched": len(states), "inserted": 0, "segments": 0}
 
     conn = None
-    tracks_conn = None
     inserted = 0
     segments = 0
     try:
         conn, has_spatialite = init_flight_db(DB_PATH, use_spatialite=False)
-        tracks_conn, _ = init_tracks_db(DB_PATH, use_spatialite=False)
+        ensure_tracks_schema(conn, has_spatialite=has_spatialite)
         inserted = insert_state_vectors(conn, rows, has_spatialite=has_spatialite)
         segments = build_tracks_incremental(conn)
     except Exception:
         logger.warning("Area backfill failed", exc_info=True)
     finally:
-        if tracks_conn is not None:
-            tracks_conn.close()
         if conn is not None:
             conn.close()
 
@@ -243,6 +239,76 @@ def _flight_window_from_request(window_key, day_str):
             }
 
     return presets.get(window_key or "last_24_hours", presets["last_24_hours"])
+
+
+def _summarize_track_windows(track_windows):
+    """Return unique aircraft count and overall time bounds for track windows."""
+    if not track_windows:
+        return 0, None, None
+
+    unique_aircraft = set()
+    available_start = None
+    available_end = None
+
+    for window in track_windows:
+        icao24 = window.get("icao24")
+        if icao24:
+            unique_aircraft.add(icao24)
+
+        start_time = window.get("start_time")
+        end_time = window.get("end_time")
+        if start_time is not None and (available_start is None or start_time < available_start):
+            available_start = start_time
+        if end_time is not None and (available_end is None or end_time > available_end):
+            available_end = end_time
+
+    return len(unique_aircraft), available_start, available_end
+
+
+def _build_track_plan_chunks(track_windows, full_start, window_end, chunk_seconds):
+    """Estimate overlapping track counts for each playback chunk in one pass."""
+    chunks = []
+    chunk_start = full_start
+    while chunk_start < window_end:
+        chunk_end = min(chunk_start + chunk_seconds, window_end)
+        chunks.append({
+            "start": chunk_start,
+            "end": chunk_end,
+            "estimated_tracks": 0,
+        })
+        chunk_start = chunk_end
+
+    if not chunks or not track_windows:
+        return chunks
+
+    deltas = [0] * (len(chunks) + 1)
+    for window in track_windows:
+        start_time = window.get("start_time")
+        end_time = window.get("end_time")
+        if start_time is None or end_time is None:
+            continue
+        if end_time < full_start or start_time > window_end:
+            continue
+
+        overlap_start = max(full_start, start_time)
+        overlap_end = min(window_end, end_time)
+        first_chunk_idx = max(0, math.ceil((overlap_start - full_start) / chunk_seconds) - 1)
+        last_chunk_idx = min(
+            len(chunks) - 1,
+            math.floor((overlap_end - full_start) / chunk_seconds),
+        )
+        if first_chunk_idx > last_chunk_idx:
+            continue
+
+        deltas[first_chunk_idx] += 1
+        deltas[last_chunk_idx + 1] -= 1
+
+    running_total = 0
+    for idx, chunk in enumerate(chunks):
+        running_total += deltas[idx]
+        chunk["estimated_tracks"] = running_total
+
+    return chunks
 
 
 @bp.route("/")
@@ -750,7 +816,7 @@ def api_tracks_plan():
         )
         recent_state_vector_count = int(cursor.fetchone()[0] or 0)
 
-        total_unique_aircraft = get_unique_aircraft_count(
+        track_windows = get_track_windows_near(
             flight_conn,
             lat,
             lon,
@@ -759,16 +825,7 @@ def api_tracks_plan():
             end_time=window_end,
             min_alt=min_alt,
         )
-
-        available_start, available_end = get_track_time_bounds(
-            flight_conn,
-            lat,
-            lon,
-            radius,
-            start_time=full_start,
-            end_time=window_end,
-            min_alt=min_alt,
-        )
+        total_unique_aircraft, available_start, available_end = _summarize_track_windows(track_windows)
 
         if (
             trim_to_available
@@ -792,27 +849,7 @@ def api_tracks_plan():
         # Determine chunk size based on density
         density, suggested_min_alt = _classify_density(total_unique_aircraft)
         chunk_seconds = _chunk_seconds_for_density(density)
-
-        # Build chunk plan
-        chunks = []
-        chunk_start = full_start
-        while chunk_start < window_end:
-            chunk_end = min(chunk_start + chunk_seconds, window_end)
-            estimated = get_track_density(
-                flight_conn,
-                lat,
-                lon,
-                radius,
-                start_time=chunk_start,
-                end_time=chunk_end,
-                min_alt=min_alt,
-            )
-            chunks.append({
-                "start": chunk_start,
-                "end": chunk_end,
-                "estimated_tracks": estimated,
-            })
-            chunk_start = chunk_end
+        chunks = _build_track_plan_chunks(track_windows, full_start, window_end, chunk_seconds)
 
         # If the selected area has no playback tracks, attempt a lightweight
         # on-demand backfill for testing and recompute the plan.
@@ -833,7 +870,7 @@ def api_tracks_plan():
             )
             recent_state_vector_count = int(cursor.fetchone()[0] or 0)
 
-            total_unique_aircraft = get_unique_aircraft_count(
+            track_windows = get_track_windows_near(
                 flight_conn,
                 lat,
                 lon,
@@ -842,28 +879,10 @@ def api_tracks_plan():
                 end_time=window_end,
                 min_alt=min_alt,
             )
+            total_unique_aircraft, available_start, available_end = _summarize_track_windows(track_windows)
             density, suggested_min_alt = _classify_density(total_unique_aircraft)
             chunk_seconds = _chunk_seconds_for_density(density)
-
-            chunks = []
-            chunk_start = full_start
-            while chunk_start < window_end:
-                chunk_end = min(chunk_start + chunk_seconds, window_end)
-                estimated = get_track_density(
-                    flight_conn,
-                    lat,
-                    lon,
-                    radius,
-                    start_time=chunk_start,
-                    end_time=chunk_end,
-                    min_alt=min_alt,
-                )
-                chunks.append({
-                    "start": chunk_start,
-                    "end": chunk_end,
-                    "estimated_tracks": estimated,
-                })
-                chunk_start = chunk_end
+            chunks = _build_track_plan_chunks(track_windows, full_start, window_end, chunk_seconds)
 
         # Fallback snapshot when we have state vectors but not enough segment
         # history yet for animated playback.

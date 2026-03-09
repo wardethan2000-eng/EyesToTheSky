@@ -111,7 +111,7 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None, start_time=
     # Group by icao24 and find closest approach for each
     aircraft = {}  # icao24 -> (min_distance, row_dict)
 
-    for row in cursor.fetchall():
+    for row in cursor:
         row_dict = dict(row)
         distance = haversine_distance(lat, lon, row_dict["latitude"], row_dict["longitude"])
 
@@ -180,8 +180,10 @@ def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None, 
 
     # Deduplicate by icao24, keeping closest approach
     aircraft = {}
-    for row in cursor.fetchall():
+    for row in cursor:
         row_dict = dict(row)
+        if not state_vector_indicates_flight(row_dict):
+            continue
         icao24 = row_dict["icao24"]
         if icao24 not in aircraft:
             row_dict["distance_miles"] = round(row_dict.pop("distance_m") / 1609.34, 2)

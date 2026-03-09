@@ -172,14 +172,8 @@ def init_zipcode_db(db_path):
     return conn
 
 
-def init_tracks_db(db_path, use_spatialite=True):
-    """
-    Initialize the track segments table in the flight database.
-
-    Creates the track_segments table for storing pre-built polyline
-    segments that group raw state vectors into per-aircraft tracks.
-    """
-    conn, has_spatialite = get_connection(db_path, use_spatialite)
+def ensure_tracks_schema(conn, has_spatialite=False):
+    """Ensure the track segment tables and indexes exist on an open connection."""
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -258,22 +252,20 @@ def init_tracks_db(db_path, use_spatialite=True):
     """)
 
     if has_spatialite:
-        # Add a geometry column and spatial index for SpatiaLite
         try:
             cursor.execute("""
                 SELECT AddGeometryColumn('track_segments', 'geom', 4326, 'POLYGON', 'XY')
             """)
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
 
         try:
             cursor.execute("""
                 SELECT CreateSpatialIndex('track_segments', 'geom')
             """)
         except sqlite3.OperationalError:
-            pass  # Index already exists
+            pass
 
-    # Track build metadata table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS track_build_meta (
             key TEXT PRIMARY KEY,
@@ -282,4 +274,15 @@ def init_tracks_db(db_path, use_spatialite=True):
     """)
 
     conn.commit()
+
+
+def init_tracks_db(db_path, use_spatialite=True):
+    """
+    Initialize the track segments table in the flight database.
+
+    Creates the track_segments table for storing pre-built polyline
+    segments that group raw state vectors into per-aircraft tracks.
+    """
+    conn, has_spatialite = get_connection(db_path, use_spatialite)
+    ensure_tracks_schema(conn, has_spatialite=has_spatialite)
     return conn, has_spatialite

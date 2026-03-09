@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 
 MIN_GROUND_POINTS_FOR_TRANSITION = 2
 MIN_DEPARTURE_CLIMB_FPM = 500.0
+TRACK_INSERT_BATCH_SIZE = 500
+
+TRACK_SEGMENT_INSERT_SQL = """
+    INSERT INTO track_segments
+        (icao24, callsign, phase, polyline, point_count,
+         start_time, end_time, min_altitude, max_altitude,
+         min_lat, max_lat, min_lon, max_lon,
+         avg_velocity, avg_heading,
+         liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time,
+         touchdown_lat, touchdown_lon, approach_heading, touchdown_time,
+         created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 
 
 def _safe_lon_delta(lat, radius_miles):
@@ -327,6 +340,38 @@ def _build_segment_record(icao24, points):
     )
 
 
+def _iter_aircraft_rows(cursor):
+    """Yield sorted state vectors grouped one aircraft at a time."""
+    current_icao24 = None
+    current_rows = []
+
+    for row in cursor:
+        row_dict = dict(row)
+        icao24 = row_dict["icao24"]
+
+        if current_icao24 is None:
+            current_icao24 = icao24
+
+        if icao24 != current_icao24:
+            yield current_icao24, current_rows
+            current_icao24 = icao24
+            current_rows = [row_dict]
+            continue
+
+        current_rows.append(row_dict)
+
+    if current_rows:
+        yield current_icao24, current_rows
+
+
+def _insert_track_segments(conn, segments):
+    """Insert a batch of prebuilt track segment records."""
+    if not segments:
+        return
+
+    conn.executemany(TRACK_SEGMENT_INSERT_SQL, segments)
+
+
 def build_tracks(conn, since_timestamp=None):
     """
     Build track segments from raw state vectors.
@@ -359,43 +404,36 @@ def build_tracks(conn, since_timestamp=None):
             "SELECT * FROM state_vectors ORDER BY icao24, timestamp"
         )
 
-    # Group rows by icao24
-    aircraft_rows = {}
-    for row in cursor.fetchall():
-        row_dict = dict(row)
-        icao24 = row_dict["icao24"]
-        if icao24 not in aircraft_rows:
-            aircraft_rows[icao24] = []
-        aircraft_rows[icao24].append(row_dict)
-
+    aircraft_count = 0
+    segment_count = 0
     segments = []
-    for icao24, rows in aircraft_rows.items():
-        for segment_points in _segment_points(rows):
-            record = _build_segment_record(icao24, segment_points)
-            if record is not None:
+
+    conn.execute("BEGIN")
+    try:
+        for icao24, rows in _iter_aircraft_rows(cursor):
+            aircraft_count += 1
+            for segment_points in _segment_points(rows):
+                record = _build_segment_record(icao24, segment_points)
+                if record is None:
+                    continue
+
                 segments.append(record)
+                if len(segments) >= TRACK_INSERT_BATCH_SIZE:
+                    _insert_track_segments(conn, segments)
+                    segment_count += len(segments)
+                    segments.clear()
 
-    if segments:
-        conn.execute("BEGIN")
-        try:
-            conn.executemany("""
-                INSERT INTO track_segments
-                    (icao24, callsign, phase, polyline, point_count,
-                     start_time, end_time, min_altitude, max_altitude,
-                     min_lat, max_lat, min_lon, max_lon,
-                     avg_velocity, avg_heading,
-                     liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time,
-                     touchdown_lat, touchdown_lon, approach_heading, touchdown_time,
-                     created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, segments)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        if segments:
+            _insert_track_segments(conn, segments)
+            segment_count += len(segments)
 
-    logger.info("Built %d track segments from %d aircraft", len(segments), len(aircraft_rows))
-    return len(segments)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    logger.info("Built %d track segments from %d aircraft", segment_count, aircraft_count)
+    return segment_count
 
 
 def build_tracks_for_aircraft(conn, icao24_list):
@@ -420,40 +458,36 @@ def build_tracks_for_aircraft(conn, icao24_list):
         tuple(aircraft),
     )
 
-    aircraft_rows = {}
-    for row in cursor.fetchall():
-        row_dict = dict(row)
-        icao24 = row_dict["icao24"]
-        aircraft_rows.setdefault(icao24, []).append(row_dict)
-
+    aircraft_count = 0
+    segment_count = 0
     segments = []
-    for icao24, rows in aircraft_rows.items():
-        for segment_points in _segment_points(rows):
-            record = _build_segment_record(icao24, segment_points)
-            if record is not None:
+
+    conn.execute("BEGIN")
+    try:
+        for icao24, rows in _iter_aircraft_rows(cursor):
+            aircraft_count += 1
+            for segment_points in _segment_points(rows):
+                record = _build_segment_record(icao24, segment_points)
+                if record is None:
+                    continue
+
                 segments.append(record)
+                if len(segments) >= TRACK_INSERT_BATCH_SIZE:
+                    _insert_track_segments(conn, segments)
+                    segment_count += len(segments)
+                    segments.clear()
 
-    if segments:
-        conn.execute("BEGIN")
-        try:
-            conn.executemany("""
-                INSERT INTO track_segments
-                    (icao24, callsign, phase, polyline, point_count,
-                     start_time, end_time, min_altitude, max_altitude,
-                     min_lat, max_lat, min_lon, max_lon,
-                     avg_velocity, avg_heading,
-                     liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time,
-                     touchdown_lat, touchdown_lon, approach_heading, touchdown_time,
-                     created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, segments)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        if segments:
+            _insert_track_segments(conn, segments)
+            segment_count += len(segments)
 
-    logger.info("Built %d track segments for %d aircraft", len(segments), len(aircraft_rows))
-    return len(segments)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    logger.info("Built %d track segments for %d aircraft", segment_count, aircraft_count)
+    return segment_count
 
 
 def build_tracks_incremental(conn):
@@ -586,12 +620,64 @@ def get_tracks_near(
     cursor.execute(query, tuple(params))
 
     results = []
-    for row in cursor.fetchall():
+    for row in cursor:
         track = dict(row)
         track["polyline"] = json.loads(track["polyline"])
         results.append(track)
 
     return results
+
+
+def get_track_windows_near(
+    conn,
+    lat,
+    lon,
+    radius_miles,
+    start_time=None,
+    end_time=None,
+    min_alt=0,
+    phases=None,
+):
+    """Return lightweight track windows for overlap planning queries."""
+    if start_time is None:
+        start_time = int(time.time()) - (RETENTION_HOURS * 3600)
+    if end_time is None:
+        end_time = int(time.time())
+
+    lat_delta = radius_miles / 69.0
+    lon_delta = _safe_lon_delta(lat, radius_miles)
+    bbox_min_lat = lat - lat_delta
+    bbox_max_lat = lat + lat_delta
+    bbox_min_lon = lon - lon_delta
+    bbox_max_lon = lon + lon_delta
+
+    params = [
+        start_time,
+        end_time,
+        bbox_min_lat,
+        bbox_max_lat,
+        bbox_min_lon,
+        bbox_max_lon,
+    ]
+    query = """
+        SELECT icao24, start_time, end_time FROM track_segments
+        WHERE end_time >= ? AND start_time <= ?
+          AND max_lat >= ? AND min_lat <= ?
+          AND max_lon >= ? AND min_lon <= ?
+    """
+
+    if min_alt and min_alt > 0:
+        query += " AND COALESCE(max_altitude, 0) >= ?"
+        params.append(min_alt)
+
+    if phases:
+        placeholders = ",".join(["?"] * len(phases))
+        query += f" AND phase IN ({placeholders})"
+        params.extend(phases)
+
+    cursor = conn.cursor()
+    cursor.execute(query, tuple(params))
+    return [dict(row) for row in cursor]
 
 
 def get_track_density(
