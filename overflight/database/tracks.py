@@ -15,6 +15,7 @@ from overflight.config import (
     SIMPLIFICATION_EPSILON,
     TRACK_GAP_THRESHOLD_SECONDS,
 )
+from overflight.database.behavior import segment_indicates_flight
 from overflight.utils.simplify import simplify_track
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,10 @@ def _build_segment_record(icao24, points):
     if len(points) < 2:
         return None
 
+    # Ignore powered-on ground traffic that never shows flight behavior.
+    if not segment_indicates_flight(points):
+        return None
+
     phase, phase_meta = _classify_phase_and_metadata(points)
 
     # Build polyline as [(timestamp, lat, lon, altitude), ...]
@@ -386,6 +391,64 @@ def build_tracks(conn, since_timestamp=None):
     return len(segments)
 
 
+def build_tracks_for_aircraft(conn, icao24_list):
+    """
+    Build track segments for a specific set of aircraft using their full history.
+
+    Args:
+        conn: SQLite connection to the flight database.
+        icao24_list: Iterable of ICAO24 strings to rebuild.
+
+    Returns:
+        Number of track segments created.
+    """
+    aircraft = sorted({icao.lower() for icao in icao24_list if icao})
+    if not aircraft:
+        return 0
+
+    placeholders = ",".join(["?"] * len(aircraft))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT * FROM state_vectors WHERE icao24 IN ({placeholders}) ORDER BY icao24, timestamp",
+        tuple(aircraft),
+    )
+
+    aircraft_rows = {}
+    for row in cursor.fetchall():
+        row_dict = dict(row)
+        icao24 = row_dict["icao24"]
+        aircraft_rows.setdefault(icao24, []).append(row_dict)
+
+    segments = []
+    for icao24, rows in aircraft_rows.items():
+        for segment_points in _segment_points(rows):
+            record = _build_segment_record(icao24, segment_points)
+            if record is not None:
+                segments.append(record)
+
+    if segments:
+        conn.execute("BEGIN")
+        try:
+            conn.executemany("""
+                INSERT INTO track_segments
+                    (icao24, callsign, phase, polyline, point_count,
+                     start_time, end_time, min_altitude, max_altitude,
+                     min_lat, max_lat, min_lon, max_lon,
+                     avg_velocity, avg_heading,
+                     liftoff_lat, liftoff_lon, liftoff_heading, liftoff_time,
+                     touchdown_lat, touchdown_lon, approach_heading, touchdown_time,
+                     created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, segments)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    logger.info("Built %d track segments for %d aircraft", len(segments), len(aircraft_rows))
+    return len(segments)
+
+
 def build_tracks_incremental(conn):
     """
     Build track segments only for state vectors added since the last build.
@@ -414,16 +477,25 @@ def build_tracks_incremental(conn):
     if last_build is not None:
         since_timestamp = max(0, last_build - overlap_seconds)
 
-    # Delete existing segments that overlap with the rebuild window
-    # to avoid duplicates from partial segments being completed
-    if since_timestamp is not None:
+    if since_timestamp is None:
+        count = build_tracks(conn, since_timestamp=None)
+    else:
         cursor.execute(
-            "DELETE FROM track_segments WHERE end_time >= ?",
+            "SELECT DISTINCT icao24 FROM state_vectors WHERE timestamp >= ?",
             (since_timestamp,),
         )
-        conn.commit()
+        impacted_aircraft = [row[0] for row in cursor.fetchall()]
 
-    count = build_tracks(conn, since_timestamp=since_timestamp)
+        if impacted_aircraft:
+            placeholders = ",".join(["?"] * len(impacted_aircraft))
+            cursor.execute(
+                f"DELETE FROM track_segments WHERE icao24 IN ({placeholders})",
+                tuple(impacted_aircraft),
+            )
+            conn.commit()
+            count = build_tracks_for_aircraft(conn, impacted_aircraft)
+        else:
+            count = 0
 
     # Update metadata to max processed event timestamp, not wall-clock time.
     cursor.execute("SELECT MAX(timestamp) FROM state_vectors")

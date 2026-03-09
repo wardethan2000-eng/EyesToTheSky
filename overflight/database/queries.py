@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 from overflight.config import DEFAULT_RADIUS_MILES, MAX_RADIUS_MILES, SEARCH_DEFAULT_WINDOW_HOURS
+from overflight.database.behavior import state_vector_indicates_flight
 
 # Earth's radius in miles
 EARTH_RADIUS_MILES = 3958.8
@@ -60,10 +61,11 @@ def _bounding_box(lat, lon, radius_miles):
 
 def find_flights_near(conn, lat, lon, radius_miles=None, hours=None, start_time=None, end_time=None):
     """
-    Find all distinct aircraft that passed within a radius of a location.
+    Find all distinct aircraft that flew within a radius of a location.
 
-    For each aircraft, returns the closest-approach position report
-    (the point where it was nearest to the user's location).
+    For each aircraft, returns the closest qualifying in-flight position report
+    (the point where it was nearest to the user's location while showing
+    airborne behavior).
 
     Args:
         conn: SQLite connection to the flight database.
@@ -115,6 +117,8 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None, start_time=
 
         # Filter by exact radius (bounding box is an approximation)
         if distance > radius_miles:
+            continue
+        if not state_vector_indicates_flight(row_dict):
             continue
 
         icao24 = row_dict["icao24"]

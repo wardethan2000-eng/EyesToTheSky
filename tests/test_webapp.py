@@ -31,6 +31,7 @@ class WebAppTestCase(unittest.TestCase):
         rows = [
             ("a1b2c3", "UAL100", 40.6413, -73.7781, 10000, 250, 90, 0, 0, now - 3600),
             ("d4e5f6", "DAL200", 40.7589, -73.9851, 8000, 200, 180, -5, 0, now - 1800),
+            ("parked1", "JBU000", 40.7592, -73.9850, 0, 5, 90, 0, 1, now - 1500),
             ("h1i2j3", "FFT400", 40.7520, -73.9900, 12000, 280, 70, 0, 0, now - 7200),
             ("g7h8i9", "AAL300", 41.8781, -87.6298, 35000, 450, 270, 0, 0, now - 900),
         ]
@@ -108,10 +109,18 @@ class TestIndexPage(WebAppTestCase):
         self.assertIn("radius-select", html)
         self.assertIn("Use My Location", html)
 
+    def test_index_busts_static_asset_cache(self):
+        resp = self.client.get("/")
+        html = resp.data.decode()
+        self.assertIn("css/style.css?v=", html)
+        self.assertIn("js/playback.js?v=", html)
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate, max-age=0")
+
     def test_index_contains_playback_tuning_config(self):
         resp = self.client.get("/")
         html = resp.data.decode()
         self.assertIn("playbackTargetFps", html)
+        self.assertIn("departurePreviewSeconds", html)
         self.assertIn("chunkFetchRetryMax", html)
         self.assertIn("chunkFetchBackoffMs", html)
         self.assertIn("chunkFailureCooldownMs", html)
@@ -169,6 +178,7 @@ class TestFlightsAPI(WebAppTestCase):
         icao_set = {f["icao24"] for f in data["flights"]}
         self.assertIn("a1b2c3", icao_set)
         self.assertIn("d4e5f6", icao_set)
+        self.assertNotIn("parked1", icao_set)
         # Chicago should not appear
         self.assertNotIn("g7h8i9", icao_set)
 

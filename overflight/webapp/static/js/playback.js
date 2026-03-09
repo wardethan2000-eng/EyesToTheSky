@@ -14,6 +14,7 @@
     var SPEED_RATIO = window.OVERFLIGHT.playbackSpeedRatio || 1;
     var RENDER_BUDGET = window.OVERFLIGHT.renderBudgetMax || 150;
     var TARGET_FPS = window.OVERFLIGHT.playbackTargetFps || 30;
+    var DEPARTURE_PREVIEW_SECONDS = window.OVERFLIGHT.departurePreviewSeconds || 45;
     var DEPARTURE_ANIMATION_SECONDS = 30;
     var DEPARTURE_BLEND_SECONDS = 8;
     var CHUNK_FETCH_RETRY_MAX = window.OVERFLIGHT.chunkFetchRetryMax || 3;
@@ -23,6 +24,7 @@
     // fly off-screen after their last data point. Both values are in data-time seconds.
     var VISIBILITY_LEAD_SECONDS = 300;
     var VISIBILITY_LINGER_SECONDS = 600;
+    var EDGE_VISIBILITY_THRESHOLD = 0.75;
 
     // --- State ---
     var plan = null;           // Chunk plan from server
@@ -219,18 +221,28 @@
                     playbackStart = plan.chunks[0].start;
                     playbackEnd = plan.chunks[plan.chunks.length - 1].end;
                     initialChunkIndex = findInitialChunkIndex(plan);
-                    // Start 15 % into the first data chunk so many flights are
-                    // already mid-crossing rather than all departing simultaneously.
                     var initChunk = plan.chunks[initialChunkIndex];
-                    playbackTime = initChunk.start + (initChunk.end - initChunk.start) * 0.15;
+                    playbackTime = initChunk.start;
 
-                    // Load initial chunk (first with data when available), then signal ready.
-                    loadChunk(initialChunkIndex, function () {
-                        // Render the initial playback frame immediately so aircraft are visible
-                        // even before the user presses play or touches the scrubber.
-                        updateVisibleAircraft();
-                        var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
-                        onPlaybackTimeChange(playbackTime, initialProgress);
+                    // Only the center chunk blocks startup. Neighbor chunks are
+                    // prefetched after ready so playback cannot get stuck in a
+                    // partial-loading state.
+                    loadInitialChunk(initialChunkIndex, function () {
+                        playbackTime = selectInitialPlaybackTime(initChunk.start);
+
+                        try {
+                            // Render the initial playback frame immediately so aircraft are visible
+                            // even before the user presses play or touches the scrubber.
+                            updateVisibleAircraft();
+                            var initialProgress = (playbackTime - playbackStart) / (playbackEnd - playbackStart);
+                            onPlaybackTimeChange(playbackTime, initialProgress);
+                        } catch (err) {
+                            console.error("Playback startup render failed", err);
+                            onLoadingProgress({
+                                message: "Playback recovered from an initial render issue.",
+                                warning: true
+                            });
+                        }
 
                         emitLoadingProgress("Ready - " + plan.total_unique_aircraft + " aircraft", 100);
                         onReady({
@@ -238,12 +250,12 @@
                             suggestedMinAlt: plan.suggested_min_alt,
                             totalUniqueAircraft: plan.total_unique_aircraft || 0
                         });
-                        // Prefetch neighboring chunks around the initial playback window.
-                        if (initialChunkIndex + 1 < plan.chunks.length) {
-                            loadChunk(initialChunkIndex + 1);
-                        }
+
                         if (initialChunkIndex - 1 >= 0) {
                             loadChunk(initialChunkIndex - 1);
+                        }
+                        if (plan && initialChunkIndex + 1 < plan.chunks.length) {
+                            loadChunk(initialChunkIndex + 1);
                         }
                     });
                 });
@@ -308,6 +320,32 @@
         );
 
         fetchChunkWithRetry(index, url, 1);
+    }
+
+    function loadInitialChunk(centerIndex, callback) {
+        loadChunk(centerIndex, function () {
+            if (callback) {
+                callback();
+            }
+        });
+    }
+
+    function selectInitialPlaybackTime(fallbackTime) {
+        var earliest = null;
+        for (var i = 0; i < allTracks.length; i++) {
+            var candidate = getVisibilityWindow(allTracks[i]).start;
+            if (earliest == null || candidate < earliest) {
+                earliest = candidate;
+            }
+        }
+
+        if (earliest == null) {
+            return fallbackTime;
+        }
+
+        if (earliest < playbackStart) earliest = playbackStart;
+        if (earliest > playbackEnd) earliest = playbackEnd;
+        return earliest;
     }
 
     function fetchChunkWithRetry(index, url, attempt) {
@@ -521,7 +559,11 @@
 
         // Cap heavy render work to a stable FPS to reduce CPU load.
         if ((now - lastRenderTime) >= (1000 / TARGET_FPS)) {
-            updateVisibleAircraft();
+            try {
+                updateVisibleAircraft();
+            } catch (err) {
+                console.error("Playback frame render failed", err);
+            }
             lastRenderTime = now;
         }
 
@@ -614,14 +656,15 @@
 
         for (var i = 0; i < allTracks.length; i++) {
             var track = allTracks[i];
-            if (t < (track.start_time - VISIBILITY_LEAD_SECONDS)) continue;
-            if (t > (track.end_time + VISIBILITY_LINGER_SECONDS)) continue;
+            var visibility = getVisibilityWindow(track);
+            if (t < visibility.start) continue;
+            if (t > visibility.end) continue;
             if (altitudeFilter > 0 && (track.max_altitude || 0) < altitudeFilter) continue;
 
             // Pass the raw playback time — interpolatePosition and getPolylinePositionAtTime
             // handle extrapolation beyond track boundaries so planes fly smoothly on/off screen.
             var pos = interpolatePosition(track, t);
-            if (pos) {
+            if (isRenderablePosition(pos)) {
                 visible.push({
                     id: track.id,
                     icao24: track.icao24,
@@ -664,6 +707,14 @@
         onAircraftUpdate(detailed, dots, visible.length, trails);
     }
 
+    function isRenderablePosition(pos) {
+        if (!pos) return false;
+        if (!isFinite(pos.lat) || !isFinite(pos.lon)) return false;
+        if (pos.lat < -90 || pos.lat > 90) return false;
+        if (pos.lon < -180 || pos.lon > 180) return false;
+        return true;
+    }
+
     function polylineToCoords(polyline) {
         if (!polyline || !polyline.length) return [];
         var coords = [];
@@ -686,6 +737,52 @@
         }
 
         return getPolylinePositionAtTime(track, t);
+    }
+
+    function getVisibilityWindow(track) {
+        var start = track.start_time;
+        var end = track.end_time;
+
+        if (shouldUseLeadIn(track)) {
+            start -= VISIBILITY_LEAD_SECONDS;
+        }
+        if (shouldUseLingerOut(track)) {
+            end += VISIBILITY_LINGER_SECONDS;
+        }
+
+        if (track.phase === "departure") {
+            start = getDeparturePreviewStart(track);
+        }
+
+        return { start: start, end: end };
+    }
+
+    function getDeparturePreviewStart(track) {
+        var liftoffTime = track.liftoff_time;
+        if (liftoffTime == null) {
+            return track.start_time;
+        }
+        return Math.max(track.start_time, liftoffTime - DEPARTURE_PREVIEW_SECONDS);
+    }
+
+    function shouldUseLeadIn(track) {
+        var poly = track.polyline;
+        if (!poly || poly.length === 0) return false;
+        return isPointNearSearchBoundary(poly[0][1], poly[0][2]);
+    }
+
+    function shouldUseLingerOut(track) {
+        var poly = track.polyline;
+        if (!poly || poly.length === 0) return false;
+        var last = poly[poly.length - 1];
+        return isPointNearSearchBoundary(last[1], last[2]);
+    }
+
+    function isPointNearSearchBoundary(lat, lon) {
+        if (searchLat == null || searchLon == null || !searchRadiusMiles) {
+            return true;
+        }
+        return distanceMiles(lat, lon, searchLat, searchLon) >= (searchRadiusMiles * EDGE_VISIBILITY_THRESHOLD);
     }
 
     function getGroundPosition(track) {
@@ -712,6 +809,11 @@
             return null;
         }
 
+        var previewStart = getDeparturePreviewStart(track);
+        if (t < previewStart) {
+            return null;
+        }
+
         var heading = track.liftoff_heading;
         if (heading == null) {
             heading = track.avg_heading || 0;
@@ -719,16 +821,25 @@
 
         var liftoffDataPos = getPolylinePositionAtTime(track, liftoffTime);
         var baseAltitude = liftoffDataPos ? (liftoffDataPos.altitude || 0) : 0;
+        var takeoffAnchor = liftoffDataPos || {
+            lat: liftoffLat,
+            lon: liftoffLon,
+            altitude: baseAltitude,
+            heading: heading
+        };
 
         if (t < liftoffTime) {
-            // Hold just behind the liftoff point to imply runway position.
-            var pre = offsetByHeading(liftoffLat, liftoffLon, (heading + 180) % 360, 0.00012);
-            return {
-                lat: pre.lat,
-                lon: pre.lon,
-                altitude: 0,
-                heading: heading
-            };
+            var groundRoll = getPolylinePositionAtTime(track, t);
+            if (!groundRoll) {
+                return takeoffAnchor;
+            }
+            if (groundRoll.altitude == null || groundRoll.altitude < 0) {
+                groundRoll.altitude = 0;
+            }
+            if (groundRoll.heading == null) {
+                groundRoll.heading = heading;
+            }
+            return groundRoll;
         }
 
         var animEnd = liftoffTime + DEPARTURE_ANIMATION_SECONDS;
@@ -739,8 +850,8 @@
 
             // Ease-in acceleration and climb during liftoff.
             var eased = progress * progress;
-            var scriptedDist = 0.00008 + (0.00135 * eased);
-            var scriptedPoint = offsetByHeading(liftoffLat, liftoffLon, heading, scriptedDist);
+            var scriptedDist = 0.00135 * eased;
+            var scriptedPoint = offsetByHeading(takeoffAnchor.lat, takeoffAnchor.lon, heading, scriptedDist);
             var scripted = {
                 lat: scriptedPoint.lat,
                 lon: scriptedPoint.lon,
@@ -813,6 +924,14 @@
 
         // Before first point — extrapolate backward so plane approaches from off-screen.
         if (t <= poly[0][0]) {
+            if (!shouldUseLeadIn(track)) {
+                return {
+                    lat: poly[0][1],
+                    lon: poly[0][2],
+                    altitude: poly[0][3] || 0,
+                    heading: computeHeading(poly, 0)
+                };
+            }
             return extrapolateFromEdge(
                 poly[0][1], poly[0][2], poly[0][3] || 0,
                 computeHeading(poly, 0),
@@ -824,6 +943,14 @@
         // After last point — extrapolate forward so plane flies off-screen.
         if (t >= poly[poly.length - 1][0]) {
             var last = poly.length - 1;
+            if (!shouldUseLingerOut(track)) {
+                return {
+                    lat: poly[last][1],
+                    lon: poly[last][2],
+                    altitude: poly[last][3] || 0,
+                    heading: computeHeading(poly, last - 1)
+                };
+            }
             return extrapolateFromEdge(
                 poly[last][1], poly[last][2], poly[last][3] || 0,
                 computeHeading(poly, last - 1),
@@ -887,6 +1014,17 @@
         var dLat = lat1 - lat2;
         var dLon = (lon1 - lon2) * Math.cos(lat1 * Math.PI / 180);
         return dLat * dLat + dLon * dLon;
+    }
+
+    function distanceMiles(lat1, lon1, lat2, lon2) {
+        var dLat = (lat2 - lat1) * Math.PI / 180;
+        var dLon = (lon2 - lon1) * Math.PI / 180;
+        var rLat1 = lat1 * Math.PI / 180;
+        var rLat2 = lat2 * Math.PI / 180;
+        var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return 3958.8 * c;
     }
 
     function getState() {

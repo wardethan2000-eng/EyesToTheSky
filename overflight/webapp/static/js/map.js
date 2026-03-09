@@ -659,6 +659,13 @@
     function updateAircraftOnMap(detailed, dots, totalCount, trails) {
         if (!map || !mapInitialized) return;
 
+        var detailedSource = map.getSource("aircraft-detailed");
+        var dotsSource = map.getSource("aircraft-dots");
+        var trailsSource = map.getSource("active-trails");
+        if (!detailedSource || !dotsSource || !trailsSource) {
+            return;
+        }
+
         var zoom = map.getZoom();
         if (zoom < 9) {
             dots = detailed.concat(dots);
@@ -668,6 +675,10 @@
         // Build GeoJSON for detailed aircraft
         var now = performance.now();
         var detailedFeatures = detailed.map(function (ac) {
+            if (!isFinite(ac.lat) || !isFinite(ac.lon)) {
+                return null;
+            }
+
             var iconInfo = window.OverflightIcons.getAircraftIcon({
                 model: null,
                 operator: null
@@ -698,15 +709,18 @@
                     opacity: opacity
                 }
             };
-        });
+        }).filter(Boolean);
 
-        map.getSource("aircraft-detailed").setData({
+        detailedSource.setData({
             type: "FeatureCollection",
             features: detailedFeatures
         });
 
         // Build GeoJSON for dots
         var dotFeatures = dots.map(function (ac) {
+            if (!isFinite(ac.lat) || !isFinite(ac.lon)) {
+                return null;
+            }
             return {
                 type: "Feature",
                 geometry: {
@@ -717,9 +731,9 @@
                     altitude: ac.altitude || 0
                 }
             };
-        });
+        }).filter(Boolean);
 
-        map.getSource("aircraft-dots").setData({
+        dotsSource.setData({
             type: "FeatureCollection",
             features: dotFeatures
         });
@@ -737,10 +751,19 @@
                 }
             };
         }).filter(function (f) {
-            return f.geometry.coordinates.length >= 2;
+            if (f.geometry.coordinates.length < 2) {
+                return false;
+            }
+            for (var i = 0; i < f.geometry.coordinates.length; i++) {
+                var coord = f.geometry.coordinates[i];
+                if (!coord || coord.length < 2 || !isFinite(coord[0]) || !isFinite(coord[1])) {
+                    return false;
+                }
+            }
+            return true;
         });
 
-        map.getSource("active-trails").setData({
+        trailsSource.setData({
             type: "FeatureCollection",
             features: trailFeatures
         });

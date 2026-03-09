@@ -9,6 +9,7 @@ Handles:
 
 import logging
 import math
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ from overflight.config import (
     PLAYBACK_CHUNK_BACKOFF_MS,
     PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS,
     PLAYBACK_CHUNK_RETRY_MAX,
+    PLAYBACK_DEPARTURE_PREVIEW_SECONDS,
     PLAYBACK_SPEED_RATIO,
     PLAYBACK_TARGET_FPS,
     RENDER_BUDGET_MAX,
@@ -58,6 +60,15 @@ RADIUS_OPTIONS = [5, 10, 25, 50]
 AREA_BACKFILL_COOLDOWN_SECONDS = 120
 _area_backfill_lock = threading.Lock()
 _area_backfill_last_run = {}
+
+
+def _asset_version(*path_parts):
+    """Return a stable cache-busting version for a static asset."""
+    asset_path = os.path.join(os.path.dirname(__file__), "static", *path_parts)
+    try:
+        return int(os.path.getmtime(asset_path))
+    except OSError:
+        return int(time.time())
 
 
 def _bbox_for_area(lat, lon, radius_miles):
@@ -244,7 +255,7 @@ def index():
     yesterday = _default_previous_day_iso()
     today = _today_iso()
 
-    return render_template(
+    response = make_response(render_template(
         "index.html",
         radius_options=RADIUS_OPTIONS,
         default_radius=int(float(saved_radius)),
@@ -260,11 +271,23 @@ def index():
             "PLAYBACK_SPEED_RATIO": PLAYBACK_SPEED_RATIO,
             "RENDER_BUDGET_MAX": RENDER_BUDGET_MAX,
             "PLAYBACK_TARGET_FPS": PLAYBACK_TARGET_FPS,
+            "PLAYBACK_DEPARTURE_PREVIEW_SECONDS": PLAYBACK_DEPARTURE_PREVIEW_SECONDS,
             "PLAYBACK_CHUNK_RETRY_MAX": PLAYBACK_CHUNK_RETRY_MAX,
             "PLAYBACK_CHUNK_BACKOFF_MS": PLAYBACK_CHUNK_BACKOFF_MS,
             "PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS": PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS,
         },
-    )
+        asset_version={
+            "css": _asset_version("css", "style.css"),
+            "icons_js": _asset_version("js", "aircraft-icons.js"),
+            "playback_js": _asset_version("js", "playback.js"),
+            "map_js": _asset_version("js", "map.js"),
+            "app_js": _asset_version("js", "app.js"),
+        },
+    ))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @bp.route("/dev/playback-harness")

@@ -31,6 +31,9 @@ CLEANUP_INTERVAL_MINUTES = int(os.environ.get("OVERFLIGHT_CLEANUP_INTERVAL", "60
 DEFAULT_RADIUS_MILES = float(os.environ.get("OVERFLIGHT_DEFAULT_RADIUS", "10"))
 MAX_RADIUS_MILES = float(os.environ.get("OVERFLIGHT_MAX_RADIUS", "50"))
 SEARCH_DEFAULT_WINDOW_HOURS = int(os.environ.get("OVERFLIGHT_SEARCH_WINDOW_HOURS", "24"))
+MIN_FLIGHT_ALTITUDE_METERS = float(os.environ.get("OVERFLIGHT_MIN_FLIGHT_ALTITUDE_METERS", "30"))
+MIN_FLIGHT_SPEED_MPS = float(os.environ.get("OVERFLIGHT_MIN_FLIGHT_SPEED_MPS", "35"))
+MIN_FLIGHT_VERTICAL_RATE_MPS = float(os.environ.get("OVERFLIGHT_MIN_FLIGHT_VERTICAL_RATE_MPS", "1.5"))
 
 # --- Ingestion Bounding Box (optional CONUS filter) ---
 # Set to None to ingest global data; set coordinates to filter
@@ -55,6 +58,9 @@ PLAYBACK_SPEED_RATIO = float(os.environ.get("OVERFLIGHT_PLAYBACK_SPEED", "1"))
 # 1 = real-time playback. Higher values intentionally accelerate playback.
 RENDER_BUDGET_MAX = int(os.environ.get("OVERFLIGHT_RENDER_BUDGET", "260"))
 PLAYBACK_TARGET_FPS = int(os.environ.get("OVERFLIGHT_PLAYBACK_TARGET_FPS", "30"))
+PLAYBACK_DEPARTURE_PREVIEW_SECONDS = int(
+    os.environ.get("OVERFLIGHT_PLAYBACK_DEPARTURE_PREVIEW_SECONDS", "45")
+)
 PLAYBACK_CHUNK_RETRY_MAX = int(os.environ.get("OVERFLIGHT_CHUNK_RETRY_MAX", "3"))
 PLAYBACK_CHUNK_BACKOFF_MS = int(os.environ.get("OVERFLIGHT_CHUNK_BACKOFF_MS", "700"))
 PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS = int(

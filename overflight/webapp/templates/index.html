@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version.css) }}">
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 </head>
 <body>
@@ -191,15 +191,16 @@
             playbackSpeedRatio: {{ config.PLAYBACK_SPEED_RATIO }},
             renderBudgetMax: {{ config.RENDER_BUDGET_MAX }},
             playbackTargetFps: {{ config.PLAYBACK_TARGET_FPS }},
+            departurePreviewSeconds: {{ config.PLAYBACK_DEPARTURE_PREVIEW_SECONDS }},
             chunkFetchRetryMax: {{ config.PLAYBACK_CHUNK_RETRY_MAX }},
             chunkFetchBackoffMs: {{ config.PLAYBACK_CHUNK_BACKOFF_MS }},
             chunkFailureCooldownMs: {{ config.PLAYBACK_CHUNK_FAILURE_COOLDOWN_MS }},
         };
     </script>
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-    <script src="{{ url_for('static', filename='js/aircraft-icons.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/playback.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/map.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/aircraft-icons.js', v=asset_version.icons_js) }}"></script>
+    <script src="{{ url_for('static', filename='js/playback.js', v=asset_version.playback_js) }}"></script>
+    <script src="{{ url_for('static', filename='js/map.js', v=asset_version.map_js) }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js', v=asset_version.app_js) }}"></script>
 </body>
 </html>

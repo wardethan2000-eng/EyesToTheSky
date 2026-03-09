@@ -146,6 +146,7 @@ class TestTracksEndpoint(TracksAPITestCase):
         icao_set = {t["icao24"] for t in data["tracks"]}
         # Should find NYC aircraft
         self.assertTrue(icao_set & {"a1b2c3", "d4e5f6"})
+        self.assertNotIn("g7h8i9", icao_set)
         # Chicago should not appear
         self.assertNotIn("chi001", icao_set)
 
@@ -212,14 +213,13 @@ class TestTracksEndpoint(TracksAPITestCase):
     def test_tracks_phase_filter_ground(self):
         resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=25&phase=ground")
         data = json.loads(resp.data)
-        for track in data["tracks"]:
-            self.assertEqual(track["phase"], "ground")
+        self.assertEqual(data["tracks"], [])
 
     def test_tracks_phase_filter_multiple(self):
         resp = self.client.get("/api/tracks?lat=40.758&lon=-73.985&radius=25&phase=enroute,ground")
         data = json.loads(resp.data)
         for track in data["tracks"]:
-            self.assertIn(track["phase"], ["enroute", "ground"])
+            self.assertEqual(track["phase"], "enroute")
 
     def test_tracks_time_window(self):
         """Tracks outside the time window are excluded."""

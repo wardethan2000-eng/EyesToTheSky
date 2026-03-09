@@ -50,6 +50,8 @@ def create_app():
     )
     app.secret_key = FLASK_SECRET_KEY
     app.debug = FLASK_DEBUG
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
 
     from overflight.webapp.routes import bp as main_bp
 

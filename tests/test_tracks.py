@@ -222,8 +222,8 @@ class TestTrackBuilding(unittest.TestCase):
         self.assertIsNotNone(row[3])
         self.assertIsNotNone(row[4])
 
-    def test_phase_classification_ground(self):
-        """All on-ground points classified as 'ground'."""
+    def test_ground_only_segments_are_skipped(self):
+        """All on-ground points are ignored because they never flew."""
         rows = [
             ("abc123", "UAL100", 40.0, -74.0, 0, 5, 90, 0, 1, self.now - 100 + i * 10)
             for i in range(5)
@@ -231,11 +231,11 @@ class TestTrackBuilding(unittest.TestCase):
         _insert_state_vectors(self.conn, rows)
 
         count = build_tracks(self.conn)
-        self.assertEqual(count, 1)
+        self.assertEqual(count, 0)
 
         cursor = self.conn.cursor()
-        cursor.execute("SELECT phase FROM track_segments")
-        self.assertEqual(cursor.fetchone()[0], "ground")
+        cursor.execute("SELECT COUNT(*) FROM track_segments")
+        self.assertEqual(cursor.fetchone()[0], 0)
 
     def test_phase_classification_enroute(self):
         """All airborne points classified as 'enroute'."""
@@ -251,6 +251,21 @@ class TestTrackBuilding(unittest.TestCase):
         cursor = self.conn.cursor()
         cursor.execute("SELECT phase FROM track_segments")
         self.assertEqual(cursor.fetchone()[0], "enroute")
+
+    def test_low_confidence_not_on_ground_segment_is_skipped(self):
+        """Sparse false airborne states should not create a visible track."""
+        rows = [
+            ("ghost01", "GND001", 40.6413, -73.7781, None, 0, 90, 0, 0, self.now - 120 + i * 10)
+            for i in range(4)
+        ]
+        _insert_state_vectors(self.conn, rows)
+
+        count = build_tracks(self.conn)
+        self.assertEqual(count, 0)
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM track_segments")
+        self.assertEqual(cursor.fetchone()[0], 0)
 
     def test_bounding_box_computed(self):
         """Track segment has correct bounding box."""
@@ -359,6 +374,43 @@ class TestIncrementalBuild(unittest.TestCase):
         row = cursor.fetchone()
         self.assertIsNotNone(row)
         self.assertGreater(int(row[0]), 0)
+
+    def test_incremental_build_preserves_existing_track_start(self):
+        """Ongoing flights keep their original start time across incremental rebuilds."""
+        base_time = self.now - 1200
+        initial_rows = [
+            (
+                "abc123", "UAL100", 40.0 + i * 0.01, -74.0 + i * 0.01,
+                10000, 250, 45, 0, 0, base_time + i * 60
+            )
+            for i in range(11)
+        ]
+        _insert_state_vectors(self.conn, initial_rows)
+
+        first_count = build_tracks_incremental(self.conn)
+        self.assertEqual(first_count, 1)
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT start_time, end_time FROM track_segments WHERE icao24 = 'abc123'")
+        first_start, first_end = cursor.fetchone()
+        self.assertEqual(first_start, base_time)
+
+        later_rows = [
+            (
+                "abc123", "UAL100", 40.11 + i * 0.01, -73.89 + i * 0.01,
+                10000, 250, 45, 0, 0, base_time + 660 + i * 60
+            )
+            for i in range(5)
+        ]
+        _insert_state_vectors(self.conn, later_rows)
+
+        second_count = build_tracks_incremental(self.conn)
+        self.assertEqual(second_count, 1)
+
+        cursor.execute("SELECT start_time, end_time FROM track_segments WHERE icao24 = 'abc123'")
+        second_start, second_end = cursor.fetchone()
+        self.assertEqual(second_start, base_time)
+        self.assertGreater(second_end, first_end)
 
 
 class TestTrackQueries(unittest.TestCase):

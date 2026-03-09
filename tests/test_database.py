@@ -176,6 +176,8 @@ class TestInsertAndQuery(unittest.TestCase):
             ("a1b2c3", "UAL100", 40.6413, -73.7781, 10000, 250, 90, 0, 0, now - 3600),
             # Aircraft over Manhattan (40.7589, -73.9851)
             ("d4e5f6", "DAL200", 40.7589, -73.9851, 8000, 200, 180, -5, 0, now - 1800),
+            # Parked aircraft near Manhattan that never flies
+            ("parked1", "JBU000", 40.7595, -73.9845, 0, 4, 180, 0, 1, now - 1200),
             # Aircraft far away in Chicago (41.8781, -87.6298)
             ("g7h8i9", "AAL300", 41.8781, -87.6298, 35000, 450, 270, 0, 0, now - 900),
             # Same aircraft near JFK at a different time
@@ -189,7 +191,7 @@ class TestInsertAndQuery(unittest.TestCase):
     def test_insert_and_count(self):
         self._insert_sample_data()
         count = get_record_count(self.conn)
-        self.assertEqual(count, 5)
+        self.assertEqual(count, 6)
 
     def test_find_flights_near_nyc(self):
         self._insert_sample_data()
@@ -200,6 +202,7 @@ class TestInsertAndQuery(unittest.TestCase):
         icao_set = {r["icao24"] for r in results}
         self.assertIn("a1b2c3", icao_set)
         self.assertIn("d4e5f6", icao_set)
+        self.assertNotIn("parked1", icao_set)
         self.assertNotIn("g7h8i9", icao_set)
 
     def test_deduplication(self):
@@ -234,6 +237,19 @@ class TestInsertAndQuery(unittest.TestCase):
         for r in results:
             self.assertIn("distance_miles", r)
             self.assertGreaterEqual(r["distance_miles"], 0)
+
+    def test_low_confidence_not_on_ground_state_is_excluded(self):
+        now = int(time.time())
+        rows = [
+            ("ghost01", "GND001", 40.7589, -73.9851, None, 0, 90, 0, 0, now - 300),
+            ("flight1", "UAL100", 40.7600, -73.9860, 500, 90, 90, 3, 0, now - 200),
+        ]
+        insert_state_vectors(self.conn, rows)
+
+        results = find_flights_near(self.conn, 40.7580, -73.9855, radius_miles=5, hours=24)
+        icao_set = {r["icao24"] for r in results}
+        self.assertIn("flight1", icao_set)
+        self.assertNotIn("ghost01", icao_set)
 
 
 class TestCleanup(unittest.TestCase):
