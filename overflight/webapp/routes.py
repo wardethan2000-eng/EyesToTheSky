@@ -725,6 +725,16 @@ def api_track_detail(icao24):
             "built_year": None,
             "aircraft_age": None,
             "registered_country": None,
+            "typecode": None,
+            "icao_aircraft_type": None,
+            "engines": None,
+            "first_flight_date": None,
+            "seat_configuration": None,
+            "category_description": None,
+            "operator_icao": None,
+            "operator_iata": None,
+            "serial_number": None,
+            "status": None,
         })
 
     import datetime
@@ -744,6 +754,16 @@ def api_track_detail(icao24):
         "built_year": aircraft.get("built_year"),
         "aircraft_age": aircraft_age,
         "registered_country": aircraft.get("registered_country"),
+        "typecode": aircraft.get("typecode"),
+        "icao_aircraft_type": aircraft.get("icao_aircraft_type"),
+        "engines": aircraft.get("engines"),
+        "first_flight_date": aircraft.get("first_flight_date"),
+        "seat_configuration": aircraft.get("seat_configuration"),
+        "category_description": aircraft.get("category_description"),
+        "operator_icao": aircraft.get("operator_icao"),
+        "operator_iata": aircraft.get("operator_iata"),
+        "serial_number": aircraft.get("serial_number"),
+        "status": aircraft.get("status"),
     })
 
 

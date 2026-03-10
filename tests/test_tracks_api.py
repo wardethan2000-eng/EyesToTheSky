@@ -14,6 +14,47 @@ from overflight.ingestion.poller import insert_state_vectors
 from overflight.webapp.routes import _chunk_seconds_for_density, _classify_density
 
 
+def insert_aircraft(conn, icao24, registration, manufacturer, model, operator, owner,
+                    built_year, registered_country, **extra_fields):
+    values = {
+        "icao24": icao24,
+        "registration": registration,
+        "manufacturer": manufacturer,
+        "model": model,
+        "operator": operator,
+        "owner": owner,
+        "built_year": built_year,
+        "registered_country": registered_country,
+        "typecode": None,
+        "icao_aircraft_type": None,
+        "engines": None,
+        "first_flight_date": None,
+        "seat_configuration": None,
+        "category_description": None,
+        "operator_icao": None,
+        "operator_iata": None,
+        "serial_number": None,
+        "status": None,
+    }
+    values.update(extra_fields)
+    conn.execute(
+        """
+        INSERT INTO aircraft (
+            icao24, registration, manufacturer, model, operator, owner,
+            built_year, registered_country, typecode, icao_aircraft_type,
+            engines, first_flight_date, seat_configuration, category_description,
+            operator_icao, operator_iata, serial_number, status
+        ) VALUES (
+            :icao24, :registration, :manufacturer, :model, :operator, :owner,
+            :built_year, :registered_country, :typecode, :icao_aircraft_type,
+            :engines, :first_flight_date, :seat_configuration, :category_description,
+            :operator_icao, :operator_iata, :serial_number, :status
+        )
+        """,
+        values,
+    )
+
+
 class TracksAPITestCase(unittest.TestCase):
     """Base class for tracks API tests with test databases."""
 
@@ -76,16 +117,34 @@ class TracksAPITestCase(unittest.TestCase):
 
         # Enrichment database
         enrichment_conn = init_enrichment_db(self.enrichment_db_path)
-        enrichment_conn.execute("""
-            INSERT INTO aircraft VALUES
-            ('a1b2c3', 'N12345', 'Boeing', '737-800', 'United Airlines',
-             'United Airlines Inc', 2005, 'United States')
-        """)
-        enrichment_conn.execute("""
-            INSERT INTO aircraft VALUES
-            ('d4e5f6', 'N67890', 'Airbus', 'A320', 'Delta Air Lines',
-             'Delta Air Lines Inc', 2010, 'United States')
-        """)
+        insert_aircraft(
+            enrichment_conn,
+            "a1b2c3",
+            "N12345",
+            "Boeing",
+            "737-800",
+            "United Airlines",
+            "United Airlines Inc",
+            2005,
+            "United States",
+            typecode="B738",
+            category_description="Large",
+            operator_icao="UAL",
+            operator_iata="UA",
+        )
+        insert_aircraft(
+            enrichment_conn,
+            "d4e5f6",
+            "N67890",
+            "Airbus",
+            "A320",
+            "Delta Air Lines",
+            "Delta Air Lines Inc",
+            2010,
+            "United States",
+            typecode="A320",
+            category_description="Large",
+        )
         enrichment_conn.commit()
         enrichment_conn.close()
 
@@ -271,6 +330,8 @@ class TestTrackDetailEndpoint(TracksAPITestCase):
         self.assertEqual(data["built_year"], 2005)
         self.assertIsNotNone(data["aircraft_age"])
         self.assertEqual(data["registered_country"], "United States")
+        self.assertEqual(data["typecode"], "B738")
+        self.assertEqual(data["category_description"], "Large")
 
     def test_detail_second_aircraft(self):
         resp = self.client.get("/api/track-detail/d4e5f6")

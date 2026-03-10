@@ -15,6 +15,47 @@ from overflight.database.schema import init_enrichment_db, init_flight_db, init_
 from overflight.ingestion.poller import insert_state_vectors
 
 
+def insert_aircraft(conn, icao24, registration, manufacturer, model, operator, owner,
+                    built_year, registered_country, **extra_fields):
+    values = {
+        "icao24": icao24,
+        "registration": registration,
+        "manufacturer": manufacturer,
+        "model": model,
+        "operator": operator,
+        "owner": owner,
+        "built_year": built_year,
+        "registered_country": registered_country,
+        "typecode": None,
+        "icao_aircraft_type": None,
+        "engines": None,
+        "first_flight_date": None,
+        "seat_configuration": None,
+        "category_description": None,
+        "operator_icao": None,
+        "operator_iata": None,
+        "serial_number": None,
+        "status": None,
+    }
+    values.update(extra_fields)
+    conn.execute(
+        """
+        INSERT INTO aircraft (
+            icao24, registration, manufacturer, model, operator, owner,
+            built_year, registered_country, typecode, icao_aircraft_type,
+            engines, first_flight_date, seat_configuration, category_description,
+            operator_icao, operator_iata, serial_number, status
+        ) VALUES (
+            :icao24, :registration, :manufacturer, :model, :operator, :owner,
+            :built_year, :registered_country, :typecode, :icao_aircraft_type,
+            :engines, :first_flight_date, :seat_configuration, :category_description,
+            :operator_icao, :operator_iata, :serial_number, :status
+        )
+        """,
+        values,
+    )
+
+
 class WebAppTestCase(unittest.TestCase):
     """Base class for webapp tests with test databases."""
 
@@ -30,7 +71,8 @@ class WebAppTestCase(unittest.TestCase):
         # Insert sample flight data around NYC
         now = int(time.time())
         rows = [
-            ("a1b2c3", "UAL100", 40.6413, -73.7781, 10000, 250, 90, 0, 0, now - 3600),
+            ("a1b2c3", "UAL100", 40.6413, -73.7781, 10000, 250, 90, 0, 0, now - 3600,
+             "United States", "7700", 10100, 0, 2),
             ("d4e5f6", "DAL200", 40.7589, -73.9851, 8000, 200, 180, -5, 0, now - 1800),
             ("parked1", "JBU000", 40.7592, -73.9850, 0, 5, 90, 0, 1, now - 1500),
             ("h1i2j3", "FFT400", 40.7520, -73.9900, 12000, 280, 70, 0, 0, now - 7200),
@@ -40,11 +82,24 @@ class WebAppTestCase(unittest.TestCase):
         flight_conn.close()
 
         enrichment_conn = init_enrichment_db(self.enrichment_db_path)
-        enrichment_conn.execute("""
-            INSERT INTO aircraft VALUES
-            ('a1b2c3', 'N12345', 'Boeing', '737-800', 'United Airlines',
-             'United Airlines Inc', 2005, 'United States')
-        """)
+        insert_aircraft(
+            enrichment_conn,
+            "a1b2c3",
+            "N12345",
+            "Boeing",
+            "737-800",
+            "United Airlines",
+            "United Airlines Inc",
+            2005,
+            "United States",
+            typecode="B738",
+            engines="2 x CFM56",
+            category_description="Large",
+            operator_icao="UAL",
+            operator_iata="UA",
+            serial_number="32456",
+            status="active",
+        )
         enrichment_conn.commit()
         enrichment_conn.close()
 
@@ -191,6 +246,20 @@ class TestFlightsAPI(WebAppTestCase):
         self.assertIsNotNone(ual)
         self.assertEqual(ual.get("manufacturer"), "Boeing")
         self.assertEqual(ual.get("model"), "737-800")
+        self.assertEqual(ual.get("typecode"), "B738")
+        self.assertEqual(ual.get("category_description"), "Large")
+
+    def test_flights_include_new_live_fields(self):
+        resp = self.client.get("/api/flights?lat=40.758&lon=-73.9855&radius=25")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        ual = next((f for f in data["flights"] if f["icao24"] == "a1b2c3"), None)
+        self.assertIsNotNone(ual)
+        self.assertEqual(ual.get("origin_country"), "United States")
+        self.assertEqual(ual.get("squawk"), "7700")
+        self.assertEqual(ual.get("squawk_meaning"), "Emergency")
+        self.assertEqual(ual.get("position_source_label"), "MLAT")
+        self.assertIsNotNone(ual.get("geo_altitude_feet"))
 
     def test_flights_sets_cookies(self):
         resp = self.client.get("/api/flights?lat=40.758&lon=-73.9855&radius=10&zip=10001")

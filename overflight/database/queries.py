@@ -21,6 +21,12 @@ EARTH_RADIUS_MILES = 3958.8
 METERS_TO_FEET = 3.28084
 MPS_TO_MPH = 2.23694
 MPS_TO_KNOTS = 1.94384
+POSITION_SOURCE_LABELS = {0: "ADS-B", 1: "ASTERIX", 2: "MLAT", 3: "FLARM"}
+SPECIAL_SQUAWKS = {
+    "7500": "Hijack",
+    "7600": "Radio Failure",
+    "7700": "Emergency",
+}
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -100,7 +106,8 @@ def find_flights_near(conn, lat, lon, radius_miles=None, hours=None, start_time=
     cursor.execute("""
         SELECT
             icao24, callsign, latitude, longitude, altitude,
-            velocity, heading, vertical_rate, on_ground, timestamp
+            velocity, heading, vertical_rate, on_ground, timestamp,
+            origin_country, squawk, geo_altitude, spi, position_source
         FROM state_vectors
                 WHERE timestamp >= ?
                     AND timestamp <= ?
@@ -164,6 +171,7 @@ def find_flights_near_spatialite(conn, lat, lon, radius_miles=None, hours=None, 
         SELECT
             icao24, callsign, latitude, longitude, altitude,
             velocity, heading, vertical_rate, on_ground, timestamp,
+            origin_country, squawk, geo_altitude, spi, position_source,
             ST_Distance(geom, MakePoint(?, ?, 4326), 1) AS distance_m
         FROM state_vectors
                 WHERE timestamp >= ?
@@ -223,6 +231,16 @@ def enrich_results(flight_results, enrichment_conn):
         flight["owner"] = aircraft_info.get("owner")
         flight["built_year"] = aircraft_info.get("built_year")
         flight["registered_country"] = aircraft_info.get("registered_country")
+        flight["typecode"] = aircraft_info.get("typecode")
+        flight["icao_aircraft_type"] = aircraft_info.get("icao_aircraft_type")
+        flight["engines"] = aircraft_info.get("engines")
+        flight["first_flight_date"] = aircraft_info.get("first_flight_date")
+        flight["seat_configuration"] = aircraft_info.get("seat_configuration")
+        flight["category_description"] = aircraft_info.get("category_description")
+        flight["operator_icao"] = aircraft_info.get("operator_icao")
+        flight["operator_iata"] = aircraft_info.get("operator_iata")
+        flight["serial_number"] = aircraft_info.get("serial_number")
+        flight["status"] = aircraft_info.get("status")
 
         # Calculate aircraft age if built year is available
         if flight["built_year"]:
@@ -238,11 +256,19 @@ def enrich_results(flight_results, enrichment_conn):
         else:
             flight["altitude_feet"] = None
 
+        if flight.get("geo_altitude") is not None:
+            flight["geo_altitude_feet"] = round(flight["geo_altitude"] * METERS_TO_FEET)
+        else:
+            flight["geo_altitude_feet"] = None
+
         if flight.get("velocity") is not None:
             flight["speed_mph"] = round(flight["velocity"] * MPS_TO_MPH)
             flight["speed_knots"] = round(flight["velocity"] * MPS_TO_KNOTS)
         else:
             flight["speed_mph"] = None
             flight["speed_knots"] = None
+
+        flight["position_source_label"] = POSITION_SOURCE_LABELS.get(flight.get("position_source"))
+        flight["squawk_meaning"] = SPECIAL_SQUAWKS.get(flight.get("squawk"))
 
     return flight_results

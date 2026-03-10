@@ -436,6 +436,26 @@ a {
     display: block;
 }
 
+.flight-detail-section {
+    margin-bottom: 0.8rem;
+}
+
+.flight-detail-section:last-child {
+    margin-bottom: 0;
+}
+
+.flight-detail-section-label {
+    display: block;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.65rem;
+    font-weight: 800;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid #e8eef5;
+}
+
 .flight-card-info {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -461,6 +481,11 @@ a {
     font-size: 0.8rem;
     font-weight: 600;
     word-break: break-word;
+}
+
+.squawk-alert {
+    color: #d32f2f;
+    font-weight: 700;
 }
 
 .no-results {

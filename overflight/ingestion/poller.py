@@ -150,10 +150,20 @@ def parse_state_vector(sv):
         if callsign:
             callsign = callsign.strip()
 
+        origin_country = sv[IDX_ORIGIN_COUNTRY]
+        if origin_country:
+            origin_country = origin_country.strip()
+
         altitude = sv[IDX_BARO_ALTITUDE]  # may be None for on-ground
         velocity = sv[IDX_VELOCITY]
         heading = sv[IDX_TRUE_TRACK]
         vertical_rate = sv[IDX_VERTICAL_RATE]
+        geo_altitude = sv[IDX_GEO_ALTITUDE]
+        squawk = sv[IDX_SQUAWK]
+        if squawk:
+            squawk = squawk.strip()
+        spi = 1 if sv[IDX_SPI] else 0
+        position_source = sv[IDX_POSITION_SOURCE]
         on_ground = 1 if sv[IDX_ON_GROUND] else 0
         timestamp = sv[IDX_TIME_POSITION] or sv[IDX_LAST_CONTACT] or int(time.time())
 
@@ -168,6 +178,11 @@ def parse_state_vector(sv):
             vertical_rate,
             on_ground,
             int(timestamp),
+            origin_country or None,
+            squawk or None,
+            geo_altitude,
+            spi,
+            position_source,
         )
 
     except (IndexError, TypeError) as e:
@@ -190,26 +205,37 @@ def insert_state_vectors(conn, rows, has_spatialite=False):
     if not rows:
         return 0
 
+    normalized_rows = []
+    for row in rows:
+        if len(row) == 10:
+            normalized_rows.append(row + (None, None, None, 0, None))
+        elif len(row) == 15:
+            normalized_rows.append(row)
+        else:
+            raise ValueError(f"State vector row must have 10 or 15 values, got {len(row)}")
+
     cursor = conn.cursor()
 
     if has_spatialite:
         cursor.executemany("""
             INSERT INTO state_vectors
                 (icao24, callsign, latitude, longitude, altitude,
-                 velocity, heading, vertical_rate, on_ground, timestamp, geom)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 velocity, heading, vertical_rate, on_ground, timestamp,
+                 origin_country, squawk, geo_altitude, spi, position_source, geom)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     MakePoint(?, ?, 4326))
-        """, [row + (row[3], row[2]) for row in rows])  # lon, lat for MakePoint
+        """, [row + (row[3], row[2]) for row in normalized_rows])  # lon, lat for MakePoint
     else:
         cursor.executemany("""
             INSERT INTO state_vectors
                 (icao24, callsign, latitude, longitude, altitude,
-                 velocity, heading, vertical_rate, on_ground, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
+                 velocity, heading, vertical_rate, on_ground, timestamp,
+                 origin_country, squawk, geo_altitude, spi, position_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, normalized_rows)
 
     conn.commit()
-    return len(rows)
+    return len(normalized_rows)
 
 
 def poll_once(conn, has_spatialite=False, bbox=None):

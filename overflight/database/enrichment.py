@@ -48,7 +48,7 @@ OPENSKY_COLUMNS = {
 }
 
 
-def load_opensky_csv(csv_path, db_path):
+def load_opensky_csv(csv_path, db_path, rebuild=False):
     """
     Load the OpenSky aircraft database CSV into the enrichment database.
 
@@ -62,6 +62,13 @@ def load_opensky_csv(csv_path, db_path):
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Aircraft database CSV not found: {csv_path}")
 
+    if rebuild:
+        for suffix in ["", "-wal", "-shm"]:
+            try:
+                os.remove(db_path + suffix)
+            except FileNotFoundError:
+                pass
+
     conn = init_enrichment_db(db_path)
     cursor = conn.cursor()
 
@@ -74,7 +81,7 @@ def load_opensky_csv(csv_path, db_path):
 
         batch = []
         for row in reader:
-            if len(row) < 19:
+            if len(row) < (max(OPENSKY_COLUMNS.values()) + 1):
                 skipped += 1
                 continue
 
@@ -89,6 +96,16 @@ def load_opensky_csv(csv_path, db_path):
             operator = row[OPENSKY_COLUMNS["operator"]].strip() or None
             owner = row[OPENSKY_COLUMNS["owner"]].strip() or None
             registered_country = row[OPENSKY_COLUMNS["registered"]].strip() or None
+            typecode = row[OPENSKY_COLUMNS["typecode"]].strip() or None
+            icao_aircraft_type = row[OPENSKY_COLUMNS["icaoaircrafttype"]].strip() or None
+            engines = row[OPENSKY_COLUMNS["engines"]].strip() or None
+            first_flight_date = row[OPENSKY_COLUMNS["firstflightdate"]].strip() or None
+            seat_configuration = row[OPENSKY_COLUMNS["seatconfiguration"]].strip() or None
+            category_description = row[OPENSKY_COLUMNS["categoryDescription"]].strip() or None
+            operator_icao = row[OPENSKY_COLUMNS["operatoricao"]].strip() or None
+            operator_iata = row[OPENSKY_COLUMNS["operatoriata"]].strip() or None
+            serial_number = row[OPENSKY_COLUMNS["serialnumber"]].strip() or None
+            status = row[OPENSKY_COLUMNS["status"]].strip() or None
 
             # Parse built year from the 'built' field (may be YYYY or YYYY-MM-DD)
             built_raw = row[OPENSKY_COLUMNS["built"]].strip()
@@ -102,6 +119,9 @@ def load_opensky_csv(csv_path, db_path):
             batch.append((
                 icao24, registration, manufacturer, model,
                 operator, owner, built_year, registered_country,
+                typecode, icao_aircraft_type, engines, first_flight_date,
+                seat_configuration, category_description, operator_icao,
+                operator_iata, serial_number, status,
             ))
 
             if len(batch) >= 5000:
@@ -124,8 +144,10 @@ def _insert_batch(cursor, batch):
     cursor.executemany("""
         INSERT OR REPLACE INTO aircraft
             (icao24, registration, manufacturer, model, operator, owner,
-             built_year, registered_country)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             built_year, registered_country, typecode, icao_aircraft_type,
+             engines, first_flight_date, seat_configuration, category_description,
+             operator_icao, operator_iata, serial_number, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, batch)
 
 

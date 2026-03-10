@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 
 from overflight.config import DB_PATH, ENRICHMENT_DB_PATH, ZIPCODE_DB_PATH
@@ -92,8 +93,14 @@ def main():
     if args.aircraft_csv:
         from overflight.database.enrichment import load_opensky_csv
 
+        for suffix in ["", "-wal", "-shm"]:
+            try:
+                os.remove(args.enrichment_db + suffix)
+            except FileNotFoundError:
+                pass
+
         logger.info("Loading aircraft data from: %s", args.aircraft_csv)
-        count = load_opensky_csv(args.aircraft_csv, args.enrichment_db)
+        count = load_opensky_csv(args.aircraft_csv, args.enrichment_db, rebuild=False)
         logger.info("Loaded %d aircraft records", count)
 
     # Load zip code data if CSV provided

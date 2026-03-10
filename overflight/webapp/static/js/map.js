@@ -1518,6 +1518,7 @@
         var iconInfo = window.OverflightIcons.getAircraftIcon(data);
         var alt = properties.altitude;
         var altFt = alt ? Math.round(alt * 3.28084) : null;
+        var title = data.manufacturer && data.model ? data.manufacturer + " " + data.model : (data.model || data.icao24 || properties.icao24);
 
         var html =
             '<div class="detail-header">' +
@@ -1527,21 +1528,17 @@
                 '<div class="detail-icon-badge" style="background:' + altitudeColor(alt) + '">' +
                     '<span class="detail-icon-label">' + escapeHtml(iconInfo.label) + '</span>' +
                 '</div>' +
-                '<h3 class="detail-title">' + escapeHtml(data.manufacturer && data.model ? data.manufacturer + " " + data.model : data.icao24 || properties.icao24) + '</h3>' +
+                '<h3 class="detail-title">' + escapeHtml(title) + '</h3>' +
             '</div>' +
             '<div class="detail-info">' +
-                detailRow("Callsign", data.callsign || properties.callsign || "\u2014") +
-                detailRow("Registration", data.registration || "\u2014") +
-                detailRow("ICAO24", (data.icao24 || properties.icao24 || "").toUpperCase()) +
-                detailRow("Operator", data.operator || "\u2014") +
-                detailRow("Owner", data.owner || "\u2014") +
-                detailRow("Manufacturer", data.manufacturer || "\u2014") +
-                detailRow("Model", data.model || "\u2014") +
-                detailRow("Built Year", data.built_year || "\u2014") +
-                detailRow("Aircraft Age", data.aircraft_age != null ? data.aircraft_age + " years" : "\u2014") +
-                detailRow("Country", data.registered_country || "\u2014") +
-                detailRow("Altitude", altFt != null ? formatNumber(altFt) + " ft" : "\u2014") +
-                detailRow("Heading", properties.heading != null ? Math.round(properties.heading) + "\u00b0" : "\u2014") +
+                optionalDetailRow("Callsign", data.callsign || properties.callsign) +
+                optionalDetailRow("Registration", data.registration) +
+                optionalDetailRow("ICAO24", (data.icao24 || properties.icao24 || "").toUpperCase()) +
+                optionalDetailRow("Type Code", data.typecode) +
+                optionalDetailRow("Category", data.category_description) +
+                optionalDetailRow("Operator", data.operator) +
+                optionalDetailRow("Altitude", altFt != null ? formatNumber(altFt) + " ft" : null) +
+                optionalDetailRow("Heading", properties.heading != null ? Math.round(properties.heading) + "\u00b0" : null) +
             '</div>';
 
         detailContent.innerHTML = html;
@@ -1552,6 +1549,11 @@
             '<span class="detail-label">' + escapeHtml(label) + '</span>' +
             '<span class="detail-value">' + escapeHtml(String(value)) + '</span>' +
             '</div>';
+    }
+
+    function optionalDetailRow(label, value) {
+        if (value == null || value === "" || value === "—") return "";
+        return detailRow(label, value);
     }
 
     function hideDetailSidebar() {

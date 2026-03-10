@@ -306,20 +306,66 @@
         card.dataset.timestamp = String(flight.timestamp || "");
 
         // Determine display name
-        var title = flight.manufacturer && flight.model
-            ? flight.manufacturer + " " + flight.model
-            : flight.icao24.toUpperCase();
+        var title = formatAircraftTitle(flight);
 
         var callsign = flight.callsign || "—";
         var operator = flight.operator || "";
         var timeStr = formatTime(flight.timestamp);
+        var squawkText = formatSquawk(flight);
+        var airlineCodes = formatAirlineCodes(flight);
+        var country = flight.origin_country || flight.registered_country || null;
+        var builtOrFirstFlight = flight.first_flight_date || flight.built_year || null;
+        var showGeoAltitude = shouldShowGeoAltitude(flight);
 
         // Summary tags
         var tags = [];
         if (flight.altitude_feet != null) tags.push("✈ " + formatNumber(flight.altitude_feet) + " ft");
         if (flight.speed_knots != null) tags.push("⟶ " + flight.speed_knots + " kts");
         if (flight.distance_miles != null) tags.push("📏 " + flight.distance_miles + " mi");
-        if (flight.aircraft_age != null) tags.push("📅 " + flight.aircraft_age + " yrs old");
+        if (flight.category_description) {
+            tags.push(flight.category_description);
+        } else if (flight.aircraft_age != null) {
+            tags.push("📅 " + flight.aircraft_age + " yrs old");
+        }
+
+        var detailsHtml = [
+            detailSection("Identity", [
+                optionalInfoItem("Callsign", callsign),
+                optionalInfoItem("Registration", flight.registration),
+                optionalInfoItem("ICAO24", flight.icao24 ? flight.icao24.toUpperCase() : null),
+                optionalInfoItem("Squawk", squawkText, flight.squawk_meaning ? "squawk-alert" : "")
+            ]),
+            detailSection("Aircraft", [
+                optionalInfoItem("Type", title),
+                optionalInfoItem("Type Code", flight.typecode),
+                optionalInfoItem("Category", flight.category_description),
+                optionalInfoItem("Engines", flight.engines),
+                optionalInfoItem("Seats", flight.seat_configuration),
+                optionalInfoItem("Built / First Flight", builtOrFirstFlight),
+                optionalInfoItem("Aircraft Age", flight.aircraft_age != null ? flight.aircraft_age + " years" : null),
+                optionalInfoItem("Serial Number", flight.serial_number),
+                optionalInfoItem("Status", flight.status)
+            ]),
+            detailSection("Operator", [
+                optionalInfoItem("Operator", operator),
+                optionalInfoItem("Owner", flight.owner),
+                optionalInfoItem("Airline Codes", airlineCodes),
+                optionalInfoItem("Country", country)
+            ]),
+            detailSection("Flight Data", [
+                optionalInfoItem("Altitude", flight.altitude_feet != null ? formatNumber(flight.altitude_feet) + " ft" : null),
+                optionalInfoItem("GPS Altitude", showGeoAltitude ? formatNumber(flight.geo_altitude_feet) + " ft" : null),
+                optionalInfoItem("Ground Speed", flight.speed_knots != null ? flight.speed_knots + " kts (" + flight.speed_mph + " mph)" : null),
+                optionalInfoItem("Heading", flight.heading != null ? Math.round(flight.heading) + "°" : null),
+                optionalInfoItem("Vertical Rate", flight.vertical_rate != null ? (flight.vertical_rate > 0 ? "+" : "") + Math.round(flight.vertical_rate * 196.85) + " ft/min" : null),
+                optionalInfoItem("Distance", flight.distance_miles != null ? flight.distance_miles + " miles" : null),
+                optionalInfoItem("On Ground", flight.on_ground ? "Yes" : "No"),
+                optionalInfoItem("Position Source", flight.position_source_label)
+            ]),
+            detailSection("Meta", [
+                optionalInfoItem("Spotted", timeStr)
+            ])
+        ].join("");
 
         card.innerHTML =
             '<div class="flight-card-header">' +
@@ -337,24 +383,7 @@
                 tags.map(function (t) { return '<span class="tag">' + t + '</span>'; }).join("") +
             '</div>' +
             '<div class="flight-card-details">' +
-                '<div class="flight-card-info">' +
-                    infoItem("ICAO24", flight.icao24.toUpperCase()) +
-                    infoItem("Registration", flight.registration || "—") +
-                    infoItem("Callsign", callsign) +
-                    infoItem("Operator", operator || "—") +
-                    infoItem("Aircraft", title) +
-                    infoItem("Owner", flight.owner || "—") +
-                    infoItem("Altitude", flight.altitude_feet != null ? formatNumber(flight.altitude_feet) + " ft" : "—") +
-                    infoItem("Ground Speed", flight.speed_knots != null ? flight.speed_knots + " kts (" + flight.speed_mph + " mph)" : "—") +
-                    infoItem("Heading", flight.heading != null ? Math.round(flight.heading) + "°" : "—") +
-                    infoItem("Vertical Rate", flight.vertical_rate != null ? (flight.vertical_rate > 0 ? "+" : "") + Math.round(flight.vertical_rate * 196.85) + " ft/min" : "—") +
-                    infoItem("Distance", flight.distance_miles != null ? flight.distance_miles + " miles" : "—") +
-                    infoItem("On Ground", flight.on_ground ? "Yes" : "No") +
-                    infoItem("Built Year", flight.built_year || "—") +
-                    infoItem("Aircraft Age", flight.aircraft_age != null ? flight.aircraft_age + " years" : "—") +
-                    infoItem("Country", flight.registered_country || "—") +
-                    infoItem("Spotted", timeStr) +
-                '</div>' +
+                detailsHtml +
             '</div>';
 
         card.addEventListener("click", function () {
@@ -383,11 +412,53 @@
         return card;
     }
 
-    function infoItem(label, value) {
+    function infoItem(label, value, valueClass) {
         return '<div class="flight-info-item">' +
             '<span class="flight-info-label">' + escapeHtml(label) + '</span>' +
-            '<span class="flight-info-value">' + escapeHtml(String(value)) + '</span>' +
+            '<span class="flight-info-value' + (valueClass ? ' ' + escapeHtml(valueClass) : '') + '">' + escapeHtml(String(value)) + '</span>' +
             '</div>';
+    }
+
+    function optionalInfoItem(label, value, valueClass) {
+        if (value == null || value === "" || value === "—") return "";
+        return infoItem(label, value, valueClass);
+    }
+
+    function detailSection(label, items) {
+        var filtered = items.filter(function (item) { return item !== ""; });
+        if (filtered.length === 0) return "";
+        return '<div class="flight-detail-section">' +
+            '<span class="flight-detail-section-label">' + escapeHtml(label) + '</span>' +
+            '<div class="flight-card-info">' + filtered.join("") + '</div>' +
+            '</div>';
+    }
+
+    function formatAircraftTitle(flight) {
+        if (flight.manufacturer && flight.model) {
+            return flight.manufacturer + " " + flight.model;
+        }
+        if (flight.model) return flight.model;
+        return flight.icao24 ? flight.icao24.toUpperCase() : "Aircraft";
+    }
+
+    function formatAirlineCodes(flight) {
+        var codes = [];
+        if (flight.operator_icao) codes.push(flight.operator_icao);
+        if (flight.operator_iata) codes.push(flight.operator_iata);
+        return codes.length ? codes.join(" / ") : null;
+    }
+
+    function formatSquawk(flight) {
+        if (!flight.squawk) return null;
+        return flight.squawk_meaning
+            ? flight.squawk + " (" + flight.squawk_meaning + ")"
+            : flight.squawk;
+    }
+
+    function shouldShowGeoAltitude(flight) {
+        if (flight.geo_altitude_feet == null) return false;
+        if (flight.altitude_feet == null) return true;
+        return Math.abs(flight.geo_altitude_feet - flight.altitude_feet) > 200;
     }
 
     // --- UI Helpers ---

@@ -64,9 +64,27 @@ def init_flight_db(db_path, use_spatialite=True):
             heading REAL,
             vertical_rate REAL,
             on_ground INTEGER NOT NULL DEFAULT 0,
-            timestamp INTEGER NOT NULL
+            timestamp INTEGER NOT NULL,
+            origin_country TEXT,
+            squawk TEXT,
+            geo_altitude REAL,
+            spi INTEGER NOT NULL DEFAULT 0,
+            position_source INTEGER
         )
     """)
+
+    cursor.execute("PRAGMA table_info(state_vectors)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    migration_columns = {
+        "origin_country": "TEXT",
+        "squawk": "TEXT",
+        "geo_altitude": "REAL",
+        "spi": "INTEGER NOT NULL DEFAULT 0",
+        "position_source": "INTEGER",
+    }
+    for col_name, col_type in migration_columns.items():
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE state_vectors ADD COLUMN {col_name} {col_type}")
 
     # Index for temporal queries and auto-purge
     cursor.execute("""
@@ -133,9 +151,37 @@ def init_enrichment_db(db_path):
             operator TEXT,
             owner TEXT,
             built_year INTEGER,
-            registered_country TEXT
+            registered_country TEXT,
+            typecode TEXT,
+            icao_aircraft_type TEXT,
+            engines TEXT,
+            first_flight_date TEXT,
+            seat_configuration TEXT,
+            category_description TEXT,
+            operator_icao TEXT,
+            operator_iata TEXT,
+            serial_number TEXT,
+            status TEXT
         )
     """)
+
+    cursor.execute("PRAGMA table_info(aircraft)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    migration_columns = {
+        "typecode": "TEXT",
+        "icao_aircraft_type": "TEXT",
+        "engines": "TEXT",
+        "first_flight_date": "TEXT",
+        "seat_configuration": "TEXT",
+        "category_description": "TEXT",
+        "operator_icao": "TEXT",
+        "operator_iata": "TEXT",
+        "serial_number": "TEXT",
+        "status": "TEXT",
+    }
+    for col_name, col_type in migration_columns.items():
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE aircraft ADD COLUMN {col_name} {col_type}")
 
     # Index for fast lookups during enrichment joins
     cursor.execute("""
